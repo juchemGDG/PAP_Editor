@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0,
+        maximum-scale=1.0, user-scalable=no">
+  <title>PAP Editor</title>
+  <link rel="stylesheet" href="pap.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ═══════ SIDEBAR ═══════ -->
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <span id="sidebar-title">PAP Editor</span>
+      <span id="sidebar-subtitle">Programmablaufplan-Designer</span>
+    </div>
+
+    <div class="section-label">BAUSTEINE</div>
+    <div id="palette"></div>
+
+    <div id="grid-controls">
+      <label id="grid-toggle-label">
+        <input type="checkbox" id="toggle-grid" checked> Raster
+      </label>
+      <input type="number" id="grid-size" value="40" min="10" max="200" step="5">
+      <span class="muted">px</span>
+    </div>
+
+    <div id="buttons">
+      <button id="btn-check"  class="btn-accent">Diagramm prüfen</button>
+      <button id="btn-new"    class="btn-sidebar">Neu</button>
+      <button id="btn-load"   class="btn-sidebar">Laden</button>
+      <button id="btn-save"   class="btn-sidebar">Speichern</button>
+      <button id="btn-png"    class="btn-sidebar">PNG export</button>
+      <button id="btn-jpg"    class="btn-sidebar">JPG export</button>
+      <button id="btn-svg"    class="btn-sidebar">SVG export</button>
+    </div>
+
+    <div id="hint-text">
+      Mehrfachauswahl: Rahmen ziehen · Shift-Klick<br>
+      Kopieren Strg/⌘+C · Einfügen Strg/⌘+V<br>
+      Undo Strg/⌘+Z · Löschen: Entf<br>
+      Funktion: Doppelklick · Zurück: Esc<br>
+      iPad: 2-Finger-Wischen zum Scrollen
+    </div>
+  </aside>
+
+  <!-- ═══════ MAIN ═══════ -->
+  <main id="main">
+    <div id="topbar">
+      <button id="sidebar-toggle" title="Menü">☰</button>
+      <button id="back-btn">← Zurück</button>
+      <span id="breadcrumb">Hauptprogramm</span>
+      <span id="status">Bereit</span>
+    </div>
+    <div id="canvas-container">
+      <canvas id="main-canvas"></canvas>
+    </div>
+  </main>
+
+</div><!-- #app -->
+
+<!-- ═══════ INFO MODAL ═══════ -->
+<div id="modal">
+  <div id="modal-box">
+    <h2 id="modal-title"></h2>
+    <pre id="modal-body"></pre>
+    <div style="text-align:right">
+      <button id="modal-close">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ PROMPT MODAL ═══════ -->
+<div id="prompt-modal">
+  <div id="prompt-box">
+    <h2 id="prompt-title"></h2>
+    <label id="prompt-label" for="prompt-input"></label>
+    <input type="text" id="prompt-input" autocomplete="off"
+           autocorrect="off" autocapitalize="off" spellcheck="false">
+    <div id="prompt-buttons">
+      <button id="prompt-cancel">Abbrechen</button>
+      <button id="prompt-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<script src="pap.js"></script>
+</body>
+</html>
