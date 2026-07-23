@@ -7,7 +7,7 @@ Startet auf http://0.0.0.0:5000 und ist damit im lokalen Netz
 import os
 from flask import Flask, send_from_directory
 
-app = Flask(__name__, static_folder="static")
+app = Flask(__name__, static_folder="static", static_url_path="")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BILDER_DIR = os.path.join(BASE_DIR, "..", "Bilder")

@@ -18,4 +18,4 @@ echo "  └───────────────────────
 echo ""
 
 cd "$SCRIPT_DIR"
-python web/app.py "$PORT"
+python3 app.py "$PORT"
