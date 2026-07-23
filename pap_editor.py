@@ -39,12 +39,12 @@ STATUS_BG = "#e2e8f0"
 NODE_STYLE = {
     "Start":          ("#b3b3b3", NODE_BORDER),
     "Stop":           ("#b3b3b3", NODE_BORDER),
-    "Funktion":       ("#e60132af", NODE_BORDER),
-    "Anweisung":      ("#e60132af", NODE_BORDER),
-    "Entscheidung":   ("#00b43f9e", NODE_BORDER),
+    "Funktion":       ("#ec4f71", NODE_BORDER),
+    "Anweisung":      ("#ec4f71", NODE_BORDER),
+    "Entscheidung":   ("#5ecf87", NODE_BORDER),
     "Verzweigung zu": ("#ffffff", NODE_BORDER),
-    "Schleife":       ("#ffb700b4", NODE_BORDER),
-    "Schleife zu":    ("#ffb700b4", NODE_BORDER),
+    "Schleife":       ("#fdcb4a", NODE_BORDER),
+    "Schleife zu":    ("#fdcb4a", NODE_BORDER),
 }
 DEFAULT_STYLE = ("#ffffff", NODE_BORDER)
 
