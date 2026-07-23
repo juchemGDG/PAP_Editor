@@ -29,20 +29,10 @@
       <span class="muted">px</span>
     </div>
 
-    <div id="buttons">
-      <button id="btn-check"  class="btn-accent">Diagramm prüfen</button>
-      <button id="btn-new"    class="btn-sidebar">Neu</button>
-      <button id="btn-load"   class="btn-sidebar">Laden</button>
-      <button id="btn-save"   class="btn-sidebar">Speichern</button>
-      <button id="btn-png"    class="btn-sidebar">PNG export</button>
-      <button id="btn-jpg"    class="btn-sidebar">JPG export</button>
-      <button id="btn-svg"    class="btn-sidebar">SVG export</button>
-    </div>
-
     <div id="hint-text">
       Mehrfachauswahl: Rahmen ziehen · Shift-Klick<br>
       Kopieren Strg/⌘+C · Einfügen Strg/⌘+V<br>
-      Undo Strg/⌘+Z · Löschen: Entf<br>
+      Undo Strg/⌘+Z · Löschen: Entf oder 🗑-Button<br>
       Funktion: Doppelklick · Zurück: Esc<br>
       iPad: 2-Finger-Wischen zum Scrollen
     </div>
@@ -51,9 +41,24 @@
   <!-- ═══════ MAIN ═══════ -->
   <main id="main">
     <div id="topbar">
-      <button id="sidebar-toggle" title="Menü">☰</button>
+      <button id="sidebar-toggle" title="Bausteine">☰</button>
       <button id="back-btn">← Zurück</button>
       <span id="breadcrumb">Hauptprogramm</span>
+
+      <nav id="menubar">
+        <button id="btn-check" class="btn-menu btn-accent">Diagramm prüfen</button>
+        <button id="btn-new"   class="btn-menu">Neu</button>
+        <button id="btn-load"  class="btn-menu">Laden</button>
+        <button id="btn-save"  class="btn-menu">Speichern</button>
+        <button id="btn-png"   class="btn-menu">PNG export</button>
+        <button id="btn-jpg"   class="btn-menu">JPG export</button>
+        <button id="btn-svg"   class="btn-menu">SVG export</button>
+      </nav>
+      <div id="menu-overlay"></div>
+
+      <button id="btn-delete" class="btn-danger" title="Markierte Elemente löschen" disabled>🗑<span id="btn-delete-label"> Löschen</span></button>
+      <button id="menu-toggle" title="Menü">⋮</button>
+
       <span id="status">Bereit</span>
     </div>
     <div id="canvas-container">

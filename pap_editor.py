@@ -39,12 +39,12 @@ STATUS_BG = "#e2e8f0"
 NODE_STYLE = {
     "Start":          ("#b3b3b3", NODE_BORDER),
     "Stop":           ("#b3b3b3", NODE_BORDER),
-    "Funktion":       ("#ea0034", NODE_BORDER),
-    "Anweisung":      ("#ea0034", NODE_BORDER),
-    "Entscheidung":   ("#00b43e", NODE_BORDER),
+    "Funktion":       ("#e60132af", NODE_BORDER),
+    "Anweisung":      ("#e60132af", NODE_BORDER),
+    "Entscheidung":   ("#00b43f9e", NODE_BORDER),
     "Verzweigung zu": ("#ffffff", NODE_BORDER),
-    "Schleife":       ("#ffb700", NODE_BORDER),
-    "Schleife zu":    ("#ffb700", NODE_BORDER),
+    "Schleife":       ("#ffb700b4", NODE_BORDER),
+    "Schleife zu":    ("#ffb700b4", NODE_BORDER),
 }
 DEFAULT_STYLE = ("#ffffff", NODE_BORDER)
 
@@ -382,33 +382,6 @@ class PapEditor(tk.Tk):
         ).pack(side="right")
         tk.Label(grid_frame, text="px", bg=SIDEBAR_BG, fg=PALETTE_MUTED, font=("Helvetica", 9)).pack(side="right", padx=(0, 4))
 
-        button_bar = tk.Frame(self.left, bg=SIDEBAR_BG)
-        button_bar.pack(fill="x", padx=12, pady=(4, 14))
-
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("Sidebar.TButton", padding=(10, 9), font=("Helvetica", 11), relief="flat",
-                        background="#334155", foreground=PALETTE_FG, borderwidth=0)
-        style.map("Sidebar.TButton", background=[("active", "#475569")])
-        style.configure("Accent.TButton", padding=(10, 9), font=("Helvetica", 11, "bold"), relief="flat",
-                        background=ACCENT, foreground="#ffffff", borderwidth=0)
-        style.map("Accent.TButton", background=[("active", "#4f46e5")])
-
-        for text, command, kind in [
-            ("Diagramm prüfen", self.check_diagram, "Accent.TButton"),
-            ("Neu", self.new_diagram, "Sidebar.TButton"),
-            ("Laden", self.load_diagram, "Sidebar.TButton"),
-            ("Speichern", self.save_diagram, "Sidebar.TButton"),
-            ("PNG export", self.export_png, "Sidebar.TButton"),
-            ("JPG export", self.export_jpg, "Sidebar.TButton"),
-            ("SVG kopieren", self.copy_svg, "Sidebar.TButton"),
-            ("SVG export", self.export_svg, "Sidebar.TButton"),
-        ]:
-            ttk.Button(button_bar, text=text, command=command, style=kind).pack(fill="x", pady=3)
-
         hint = tk.Label(
             self.left,
             text="Mehrfachauswahl: Rahmen ziehen · Shift-Klick\n"
@@ -419,16 +392,45 @@ class PapEditor(tk.Tk):
         )
         hint.pack(anchor="w", padx=16, pady=(0, 12))
 
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Sidebar.TButton", padding=(9, 6), font=("Helvetica", 10), relief="flat",
+                        background="#334155", foreground=PALETTE_FG, borderwidth=0)
+        style.map("Sidebar.TButton", background=[("active", "#475569")])
+        style.configure("Accent.TButton", padding=(9, 6), font=("Helvetica", 10, "bold"), relief="flat",
+                        background=ACCENT, foreground="#ffffff", borderwidth=0)
+        style.map("Accent.TButton", background=[("active", "#4f46e5")])
+
+        # Kopfleiste: Zurück-Button · Breadcrumb (wächst) · Aktionen-Menüleiste · Status
         topbar = tk.Frame(self.right, bg=STATUS_BG)
         topbar.grid(row=0, column=0, columnspan=2, sticky="ew")
-        topbar.columnconfigure(2, weight=1)
+        topbar.columnconfigure(1, weight=1)
+
         self.back_button = ttk.Button(topbar, text="← Zurück", command=self.close_function, style="Sidebar.TButton")
         self.breadcrumb = tk.StringVar(value=self.context_title)
         tk.Label(topbar, textvariable=self.breadcrumb, bg=STATUS_BG, fg="#0f172a",
                  padx=12, pady=5, font=("Helvetica", 11, "bold")).grid(row=0, column=1, sticky="w")
+
+        menubar = tk.Frame(topbar, bg=STATUS_BG)
+        menubar.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        for text, command, kind in [
+            ("Diagramm prüfen", self.check_diagram, "Accent.TButton"),
+            ("Neu", self.new_diagram, "Sidebar.TButton"),
+            ("Laden", self.load_diagram, "Sidebar.TButton"),
+            ("Speichern", self.save_diagram, "Sidebar.TButton"),
+            ("PNG export", self.export_png, "Sidebar.TButton"),
+            ("JPG export", self.export_jpg, "Sidebar.TButton"),
+            ("SVG kopieren", self.copy_svg, "Sidebar.TButton"),
+            ("SVG export", self.export_svg, "Sidebar.TButton"),
+        ]:
+            ttk.Button(menubar, text=text, command=command, style=kind).pack(side="left", padx=(0, 4), pady=4)
+
         self.status = tk.StringVar(value="Bereit")
         tk.Label(topbar, textvariable=self.status, anchor="e", bg=STATUS_BG, fg="#475569",
-                 padx=12, pady=5, font=("Helvetica", 10)).grid(row=0, column=2, sticky="e")
+                 padx=12, pady=5, font=("Helvetica", 10)).grid(row=0, column=3, sticky="e")
 
         self.canvas = tk.Canvas(self.right, bg=CANVAS_BG, highlightthickness=0, scrollregion=(0, 0, 5000, 5000))
         self.canvas.grid(row=1, column=0, sticky="nsew")

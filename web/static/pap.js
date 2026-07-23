@@ -16,12 +16,12 @@ const TEXT_COLOR     = '#111111';
 const NODE_STYLE = {
   'Start':          ['#b3b3b3', NODE_BORDER],
   'Stop':           ['#b3b3b3', NODE_BORDER],
-  'Funktion':       ['#ea0034', NODE_BORDER],
-  'Anweisung':      ['#ea0034', NODE_BORDER],
-  'Entscheidung':   ['#00b43e', NODE_BORDER],
+  'Funktion':       ['#e60132af', NODE_BORDER],
+  'Anweisung':      ['#e60132af', NODE_BORDER],
+  'Entscheidung':   ['#00b43f9e', NODE_BORDER],
   'Verzweigung zu': ['#ffffff', NODE_BORDER],
-  'Schleife':       ['#ffb700', NODE_BORDER],
-  'Schleife zu':    ['#ffb700', NODE_BORDER],
+  'Schleife':       ['#ffb700b4', NODE_BORDER],
+  'Schleife zu':    ['#ffb700b4', NODE_BORDER],
 };
 const DEFAULT_STYLE = ['#ffffff', NODE_BORDER];
 
@@ -305,7 +305,7 @@ function redraw(c) {
     c.setLineDash([]);
   }
 
-  if (isMain) { c.restore(); updateStatus(); }
+  if (isMain) { c.restore(); updateStatus(); updateDeleteButton(); }
 }
 
 function drawGrid(c) {
@@ -1282,6 +1282,21 @@ function showPrompt(title, lbl, def, cb) {
 function toggleSidebar() {
   const sb = document.getElementById('sidebar');
   sb.classList.toggle('open');
+  closeMenu();
+}
+
+function toggleMenu() {
+  document.getElementById('menubar').classList.toggle('open');
+  document.getElementById('sidebar').classList.remove('open');
+}
+
+function closeMenu() {
+  document.getElementById('menubar').classList.remove('open');
+}
+
+function updateDeleteButton() {
+  const btn = document.getElementById('btn-delete');
+  btn.disabled = !selNodes.size && selArrow === null;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1304,6 +1319,13 @@ function init() {
   document.getElementById('btn-svg')  .addEventListener('click', exportSVG);
   document.getElementById('back-btn') .addEventListener('click', closeFunction);
   document.getElementById('sidebar-toggle').addEventListener('click', toggleSidebar);
+  document.getElementById('menu-toggle').addEventListener('click', toggleMenu);
+  document.getElementById('menu-overlay').addEventListener('click', closeMenu);
+  document.getElementById('menubar').addEventListener('click', e => {
+    if (e.target.closest('button')) closeMenu();
+  });
+  document.getElementById('btn-delete').addEventListener('click', deleteSelected);
+  updateDeleteButton();
 
   document.getElementById('toggle-grid').addEventListener('change', e => {
     showGrid = e.target.checked; redraw();
