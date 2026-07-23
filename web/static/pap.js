@@ -14,14 +14,14 @@ const NODE_BORDER    = '#111111';
 const TEXT_COLOR     = '#111111';
 
 const NODE_STYLE = {
-    "Start":          ("#b3b3b3", NODE_BORDER),
-    "Stop":           ("#b3b3b3", NODE_BORDER),
-    "Funktion":       ("#ec4f71", NODE_BORDER),
-    "Anweisung":      ("#ec4f71", NODE_BORDER),
-    "Entscheidung":   ("#5ecf87", NODE_BORDER),
-    "Verzweigung zu": ("#ffffff", NODE_BORDER),
-    "Schleife":       ("#fdcb4a", NODE_BORDER),
-    "Schleife zu":    ("#fdcb4a", NODE_BORDER),
+  'Start':          ['#b3b3b3', NODE_BORDER],
+  'Stop':           ['#b3b3b3', NODE_BORDER],
+  'Funktion':       ['#ec4f71', NODE_BORDER],
+  'Anweisung':      ['#ec4f71', NODE_BORDER],
+  'Entscheidung':   ['#5ecf87', NODE_BORDER],
+  'Verzweigung zu': ['#ffffff', NODE_BORDER],
+  'Schleife':       ['#fdcb4a', NODE_BORDER],
+  'Schleife zu':    ['#fdcb4a', NODE_BORDER],
 };
 const DEFAULT_STYLE = ['#ffffff', NODE_BORDER];
 
