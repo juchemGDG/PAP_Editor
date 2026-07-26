@@ -1335,6 +1335,7 @@ class PapEditor(tk.Tk):
 
     def check_diagram(self) -> None:
         issues: List[str] = []
+        info: List[str] = []
         starts = [n for n in self.nodes.values() if n.template_label == "Start"]
         stops = [n for n in self.nodes.values() if n.template_label == "Stop"]
         if len(starts) != 1:
@@ -1348,12 +1349,16 @@ class PapEditor(tk.Tk):
             outgoing.setdefault(arrow.source_id, []).append(arrow)
             incoming.setdefault(arrow.target_id, []).append(arrow)
 
+        decision_count = 0
         for node in self.nodes.values():
             out_count = len(outgoing.get(node.id, []))
             in_count = len(incoming.get(node.id, []))
+            is_connector = node.template_label == "Verzweigung zu"
             if node.template_label == "Start":
                 if out_count == 0:
                     issues.append(f"Start-Block '{node.label}' hat keine ausgehende Verbindung.")
+                if out_count > 1:
+                    issues.append(f"Start-Block '{node.label}' hat mehrere ausgehende Verbindungen ({out_count}) – doppelter Weg ohne Verzweigung.")
                 if in_count > 0:
                     issues.append(f"Start-Block '{node.label}' darf keine eingehende Verbindung haben.")
             elif node.template_label == "Stop":
@@ -1362,15 +1367,28 @@ class PapEditor(tk.Tk):
                 if out_count > 0:
                     issues.append(f"Stop-Block '{node.label}' darf keine ausgehende Verbindung haben.")
             elif node.template_label == "Entscheidung":
+                decision_count += 1
                 if out_count < 2:
                     issues.append(f"Verzweigung '{node.label}' benötigt mindestens zwei Ausgänge (gefunden: {out_count}).")
                 if in_count == 0:
                     issues.append(f"Verzweigung '{node.label}' hat keine eingehende Verbindung.")
+                if in_count > 1:
+                    issues.append(f"Verzweigung '{node.label}' hat mehrere eingehende Verbindungen ({in_count}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.")
             else:
                 if in_count == 0:
                     issues.append(f"Block '{node.label}' ({node.template_label}) ist nicht erreichbar (keine eingehende Verbindung).")
                 if out_count == 0:
                     issues.append(f"Block '{node.label}' ({node.template_label}) hat keinen Ausgang.")
+                if out_count > 1:
+                    issues.append(f"Block '{node.label}' hat mehrere ausgehende Verbindungen ({out_count}), ist aber kein Entscheidungs-Symbol – doppelter Weg ohne Verzweigung.")
+                if not is_connector and in_count > 1:
+                    issues.append(f"Block '{node.label}' hat mehrere eingehende Verbindungen ({in_count}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.")
+
+        info.append(
+            f"Gefundene Verzweigungen (Entscheidungs-Blöcke): {decision_count}."
+            if decision_count else
+            "Keine Verzweigung (Entscheidungs-Block) im PAP gefunden."
+        )
 
         if starts:
             reachable = set()
@@ -1389,10 +1407,54 @@ class PapEditor(tk.Tk):
                 if stop.id not in reachable:
                     issues.append(f"Stop-Block '{stop.label}' wird nie erreicht.")
 
-        if issues:
-            messagebox.showwarning("Plausibilitätsprüfung", "Gefundene Probleme:\n\n" + "\n".join(f"- {i}" for i in issues))
+        # Pfeile dürfen im PAP nie nach oben führen – Wiederholungen werden über
+        # die Schleife/Schleife-zu-Symbole abgebildet, nicht über Rücksprünge.
+        for arrow in self.arrows.values():
+            source = self.nodes.get(arrow.source_id)
+            target = self.nodes.get(arrow.target_id)
+            if source and target and target.y <= source.y - 20:
+                issues.append(f"Pfeil von '{source.label}' nach '{target.label}' führt nach oben – im PAP nicht zulässig, Wiederholungen gehören in ein Schleife/Schleife-zu-Paar.")
+
+        # Schleifen müssen auf jedem Pfad korrekt geschachtelt geschlossen werden
+        # (jede 'Schleife' braucht eine passende 'Schleife zu', bevor der Pfad endet).
+        if starts:
+            seen_states: Set[Tuple[int, Tuple[int, ...]]] = set()
+
+            def walk(node_id: int, stack: List[int]) -> None:
+                key = (node_id, tuple(stack))
+                if key in seen_states:
+                    return
+                seen_states.add(key)
+                node = self.nodes.get(node_id)
+                if node is None:
+                    return
+                next_stack = stack
+                if node.template_label == "Schleife":
+                    next_stack = stack + [node.id]
+                elif node.template_label == "Schleife zu":
+                    if not stack:
+                        issues.append(f"'Schleife zu' bei '{node.label}' hat keine zugehörige offene Schleife.")
+                    else:
+                        next_stack = stack[:-1]
+
+                outs = outgoing.get(node_id, [])
+                if not outs and next_stack:
+                    open_node = self.nodes.get(next_stack[-1])
+                    open_label = open_node.label if open_node else "?"
+                    issues.append(f"Schleife '{open_label}' wird nie geschlossen (Pfad endet bei '{node.label}').")
+                for arrow in outs:
+                    walk(arrow.target_id, next_stack)
+
+            walk(starts[0].id, [])
+
+        unique_issues = list(dict.fromkeys(issues))
+        if unique_issues:
+            body = "Gefundene Probleme:\n\n" + "\n".join(f"- {i}" for i in unique_issues)
+            body += "\n\n" + "\n".join(f"ℹ {i}" for i in info)
+            messagebox.showwarning("Plausibilitätsprüfung", body)
         else:
-            messagebox.showinfo("Plausibilitätsprüfung", "Keine Probleme gefunden. Der Algorithmus scheint plausibel.")
+            body = "Keine Probleme gefunden. Der Algorithmus scheint plausibel.\n\n" + "\n".join(f"ℹ {i}" for i in info)
+            messagebox.showinfo("Plausibilitätsprüfung", body)
 
     def export_png(self) -> None:
         self._export_image("png")

@@ -746,6 +746,7 @@ function updateCtxUI() {
 // ════════════════════════════════════════════════════════════
 function checkDiagram() {
   const issues = [];
+  const info = [];
   const starts = Object.values(nodes).filter(n => n.templateLabel === 'Start');
   const stops  = Object.values(nodes).filter(n => n.templateLabel === 'Stop');
   if (starts.length !== 1) issues.push(`Es muss genau einen Start-Block geben (gefunden: ${starts.length}).`);
@@ -756,31 +757,85 @@ function checkDiagram() {
     (out[a.sourceId] = out[a.sourceId]||[]).push(a);
     (inc[a.targetId] = inc[a.targetId]||[]).push(a);
   }
+
+  let decisionCount = 0;
   for (const n of Object.values(nodes)) {
     const o = (out[n.id]||[]).length, i = (inc[n.id]||[]).length;
+    const isConnector = n.templateLabel === 'Verzweigung zu';
     if (n.templateLabel === 'Start') {
       if (o===0) issues.push(`Start '${n.label}' hat keine ausgehende Verbindung.`);
+      if (o> 1) issues.push(`Start '${n.label}' hat mehrere ausgehende Verbindungen (${o}) – doppelter Weg ohne Verzweigung.`);
       if (i> 0) issues.push(`Start '${n.label}' darf keine eingehende Verbindung haben.`);
     } else if (n.templateLabel === 'Stop') {
       if (i===0) issues.push(`Stop '${n.label}' hat keine eingehende Verbindung.`);
       if (o> 0) issues.push(`Stop '${n.label}' darf keine ausgehende Verbindung haben.`);
     } else if (n.templateLabel === 'Entscheidung') {
+      decisionCount++;
       if (o < 2) issues.push(`Verzweigung '${n.label}' benötigt mindestens zwei Ausgänge (gefunden: ${o}).`);
       if (i===0) issues.push(`Verzweigung '${n.label}' hat keine eingehende Verbindung.`);
+      if (i> 1) issues.push(`Verzweigung '${n.label}' hat mehrere eingehende Verbindungen (${i}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.`);
     } else {
       if (i===0) issues.push(`Block '${n.label}' ist nicht erreichbar.`);
       if (o===0) issues.push(`Block '${n.label}' hat keinen Ausgang.`);
+      if (o> 1) issues.push(`Block '${n.label}' hat mehrere ausgehende Verbindungen (${o}), ist aber kein Entscheidungs-Symbol – doppelter Weg ohne Verzweigung.`);
+      if (!isConnector && i> 1) issues.push(`Block '${n.label}' hat mehrere eingehende Verbindungen (${i}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.`);
     }
   }
+  info.push(decisionCount
+    ? `Gefundene Verzweigungen (Entscheidungs-Blöcke): ${decisionCount}.`
+    : 'Keine Verzweigung (Entscheidungs-Block) im PAP gefunden.');
+
   if (starts.length) {
     const reach = new Set(), stk = [starts[0].id];
     while(stk.length){ const c=stk.pop(); if(reach.has(c))continue; reach.add(c); for(const a of(out[c]||[]))stk.push(a.targetId); }
     for (const n of Object.values(nodes))
       if (!reach.has(n.id)) issues.push(`Block '${n.label}' vom Start nicht erreichbar.`);
   }
+
+  // Pfeile dürfen im PAP nie nach oben führen – Wiederholungen werden über
+  // die Schleife/Schleife-zu-Symbole abgebildet, nicht über Rücksprünge.
+  for (const a of Object.values(arrows)) {
+    const s = nodes[a.sourceId], t = nodes[a.targetId];
+    if (s && t && t.y <= s.y - 20) {
+      issues.push(`Pfeil von '${s.label}' nach '${t.label}' führt nach oben – im PAP nicht zulässig, Wiederholungen gehören in ein Schleife/Schleife-zu-Paar.`);
+    }
+  }
+
+  // Schleifen müssen auf jedem Pfad korrekt geschachtelt geschlossen werden
+  // (jede 'Schleife' braucht eine passende 'Schleife zu' davor, dass der Pfad endet).
+  if (starts.length) {
+    const seenStates = new Set();
+    const walk = (id, stack) => {
+      const key = id + '|' + stack.join(',');
+      if (seenStates.has(key)) return;
+      seenStates.add(key);
+      const n = nodes[id];
+      if (!n) return;
+      let nextStack = stack;
+      if (n.templateLabel === 'Schleife') {
+        nextStack = [...stack, n.id];
+      } else if (n.templateLabel === 'Schleife zu') {
+        if (!stack.length) {
+          issues.push(`'Schleife zu' bei '${n.label}' hat keine zugehörige offene Schleife.`);
+        } else {
+          nextStack = stack.slice(0, -1);
+        }
+      }
+      const outs = out[id] || [];
+      if (!outs.length && nextStack.length) {
+        const openNode = nodes[nextStack[nextStack.length - 1]];
+        issues.push(`Schleife '${openNode ? openNode.label : '?'}' wird nie geschlossen (Pfad endet bei '${n.label}').`);
+      }
+      for (const a of outs) walk(a.targetId, nextStack);
+    };
+    walk(starts[0].id, []);
+  }
+
+  const uniqueIssues = [...new Set(issues)];
   showModal('Plausibilitätsprüfung',
-    issues.length ? 'Gefundene Probleme:\n\n' + issues.map(i=>'• '+i).join('\n')
-                  : 'Keine Probleme gefunden.\nDer Algorithmus scheint plausibel. ✓');
+    (uniqueIssues.length ? 'Gefundene Probleme:\n\n' + uniqueIssues.map(i=>'• '+i).join('\n') + '\n\n'
+                  : 'Keine Probleme gefunden.\nDer Algorithmus scheint plausibel. ✓\n\n')
+    + info.map(i=>'ℹ ' + i).join('\n'));
 }
 
 // ════════════════════════════════════════════════════════════
