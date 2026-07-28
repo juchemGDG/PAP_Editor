@@ -742,100 +742,736 @@ function updateCtxUI() {
 }
 
 // ════════════════════════════════════════════════════════════
-// Diagramm-Validierung
+// Diagramm-Validierung (Regelwerk für PAP / DIN 66001)
 // ════════════════════════════════════════════════════════════
-function checkDiagram() {
-  const issues = [];
-  const info = [];
-  const starts = Object.values(nodes).filter(n => n.templateLabel === 'Start');
-  const stops  = Object.values(nodes).filter(n => n.templateLabel === 'Stop');
-  if (starts.length !== 1) issues.push(`Es muss genau einen Start-Block geben (gefunden: ${starts.length}).`);
-  if (!stops.length)       issues.push('Es muss mindestens einen Stop-Block geben.');
+//
+// Entspricht der Logik in pap_editor.py (siehe dort für Details zu den
+// bewusst nicht umgesetzten Regeln R07/R13/R16/R21/R32 und wie man eine
+// neue Regel ergänzt).
 
-  const out = {}, inc = {};
-  for (const a of Object.values(arrows)) {
-    (out[a.sourceId] = out[a.sourceId]||[]).push(a);
-    (inc[a.targetId] = inc[a.targetId]||[]).push(a);
+const ROLE_BY_TEMPLATE = {
+  'Start': 'start', 'Stop': 'stop', 'Anweisung': 'process', 'Funktion': 'subprocess',
+  'Entscheidung': 'decision', 'Verzweigung zu': 'branchEnd', 'Schleife': 'loopStart', 'Schleife zu': 'loopEnd',
+};
+function roleOf(n) { return ROLE_BY_TEMPLATE[n.templateLabel] || 'process'; }
+
+const ROLE_NAMES_DE = { process: 'Anweisungs', loopStart: 'Schleifen', loopEnd: 'Schleife-zu', subprocess: 'Funktions' };
+const UNLABELED_ROLE_NAMES = { branchEnd: 'Verzweigung zu', loopEnd: 'Schleife zu' };
+function displayLabel(n) {
+  if (n.label && n.label.trim()) return n.label;
+  return UNLABELED_ROLE_NAMES[roleOf(n)] || n.label || '?';
+}
+
+const COMPARISON_OPS = ['==', '!=', '<=', '>=', '<', '>'];
+const BOOL_WORDS = ['und', 'oder', 'nicht', 'and', 'or', 'not', '&&', '||'];
+const YES_WORDS = new Set(['ja', 'yes', 'j', 'y', 'true', 'wahr']);
+const NO_WORDS = new Set(['nein', 'no', 'n', 'false', 'falsch']);
+const OUTPUT_KEYWORDS = ['ausgabe', 'gib aus', 'ausgeben', 'ausgeb', 'schreibe', 'print', 'cout', 'system.out', 'write'];
+const IDENT_RE = /[A-Za-z_]\w*/g;
+const ASSIGN_RE = /:=|<-|(?<![=!<>])=(?!=)/;
+const STRING_LITERAL_RE = /'[^']*'|"[^"]*"/g;
+const STOPWORDS = new Set([
+  'und', 'oder', 'nicht', 'and', 'or', 'not', 'true', 'false', 'wahr', 'falsch',
+  'then', 'dann', 'if', 'wenn', 'sonst', 'else', 'ausgabe', 'eingabe', 'print',
+  'input', 'cout', 'system', 'out', 'write', 'gib', 'aus', 'schreibe', 'lies', 'einlesen',
+]);
+
+function F(rule, severity, message, nodeIds, arrowIds) {
+  return { rule, severity, message, nodeIds: nodeIds || [], arrowIds: arrowIds || [] };
+}
+
+function splitAssignment(text) {
+  const m = ASSIGN_RE.exec(text || '');
+  if (!m) return null;
+  return [text.slice(0, m.index), text.slice(m.index + m[0].length)];
+}
+
+function extractIdentifiers(text) {
+  const out = new Set();
+  const cleaned = (text || '').replace(STRING_LITERAL_RE, ' ');
+  for (const m of cleaned.matchAll(IDENT_RE)) {
+    if (!STOPWORDS.has(m[0].toLowerCase())) out.add(m[0]);
   }
+  return out;
+}
 
-  let decisionCount = 0;
-  for (const n of Object.values(nodes)) {
-    const o = (out[n.id]||[]).length, i = (inc[n.id]||[]).length;
-    const isConnector = n.templateLabel === 'Verzweigung zu';
-    if (n.templateLabel === 'Start') {
-      if (o===0) issues.push(`Start '${n.label}' hat keine ausgehende Verbindung.`);
-      if (o> 1) issues.push(`Start '${n.label}' hat mehrere ausgehende Verbindungen (${o}) – doppelter Weg ohne Verzweigung.`);
-      if (i> 0) issues.push(`Start '${n.label}' darf keine eingehende Verbindung haben.`);
-    } else if (n.templateLabel === 'Stop') {
-      if (i===0) issues.push(`Stop '${n.label}' hat keine eingehende Verbindung.`);
-      if (o> 0) issues.push(`Stop '${n.label}' darf keine ausgehende Verbindung haben.`);
-    } else if (n.templateLabel === 'Entscheidung') {
-      decisionCount++;
-      if (o < 2) issues.push(`Verzweigung '${n.label}' benötigt mindestens zwei Ausgänge (gefunden: ${o}).`);
-      if (i===0) issues.push(`Verzweigung '${n.label}' hat keine eingehende Verbindung.`);
-      if (i> 1) issues.push(`Verzweigung '${n.label}' hat mehrere eingehende Verbindungen (${i}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.`);
+function isOutputBlock(n) {
+  if (roleOf(n) !== 'process') return false;
+  const label = (n.label || '').trim().toLowerCase();
+  return OUTPUT_KEYWORDS.some(kw => label.startsWith(kw) || label.includes(kw));
+}
+
+function buildEdgeMaps(nodesObj, arrowsObj) {
+  const outgoing = {}, incoming = {};
+  for (const a of Object.values(arrowsObj)) {
+    if (nodesObj[a.sourceId] && nodesObj[a.targetId]) {
+      (outgoing[a.sourceId] = outgoing[a.sourceId] || []).push(a);
+      (incoming[a.targetId] = incoming[a.targetId] || []).push(a);
+    }
+  }
+  return { outgoing, incoming };
+}
+
+// ---- A. Globale Struktur ----
+
+function checkR01Start(nodesObj) {
+  const starts = Object.values(nodesObj).filter(n => roleOf(n) === 'start');
+  if (starts.length === 0) return [F('R01', 'error', 'Es gibt keinen Start-Block – jeder Ablauf braucht genau einen.')];
+  if (starts.length > 1) return [F('R01', 'error', `Es gibt ${starts.length} Start-Blöcke – es darf nur genau einen geben.`, starts.map(n => n.id))];
+  return [];
+}
+
+function checkR02StopExists(nodesObj) {
+  if (!Object.values(nodesObj).some(n => roleOf(n) === 'stop')) {
+    return [F('R02', 'error', 'Es gibt keinen Stop-Block – jeder Ablauf muss enden.')];
+  }
+  return [];
+}
+
+function checkR03MultipleStops(nodesObj) {
+  const stops = Object.values(nodesObj).filter(n => roleOf(n) === 'stop');
+  if (stops.length > 1) {
+    return [F('R03', 'warning', `Es gibt ${stops.length} Stop-Blöcke – meist ist genau ein Stop-Block übersichtlicher.`, stops.map(n => n.id))];
+  }
+  return [];
+}
+
+function checkR04ReachableFromStart(nodesObj, outgoing) {
+  const starts = Object.values(nodesObj).filter(n => roleOf(n) === 'start');
+  if (starts.length !== 1) return [];
+  const reachable = new Set();
+  const stack = [starts[0].id];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (reachable.has(cur)) continue;
+    reachable.add(cur);
+    for (const a of (outgoing[cur] || [])) stack.push(a.targetId);
+  }
+  return Object.values(nodesObj)
+    .filter(n => !reachable.has(n.id))
+    .map(n => F('R04', 'error', `Der Block »${displayLabel(n)}« ist vom Start aus nicht erreichbar.`, [n.id]));
+}
+
+function checkR05ReachStop(nodesObj, incoming) {
+  const stops = Object.values(nodesObj).filter(n => roleOf(n) === 'stop');
+  if (!stops.length) return [];
+  const canReachStop = new Set();
+  const stack = stops.map(s => s.id);
+  while (stack.length) {
+    const cur = stack.pop();
+    if (canReachStop.has(cur)) continue;
+    canReachStop.add(cur);
+    for (const a of (incoming[cur] || [])) stack.push(a.sourceId);
+  }
+  return Object.values(nodesObj)
+    .filter(n => !canReachStop.has(n.id))
+    .map(n => F('R05', 'error', `Vom Block »${displayLabel(n)}« aus wird kein Stop-Block mehr erreicht (Sackgasse).`, [n.id]));
+}
+
+function checkR06Connected(nodesObj, arrowsObj) {
+  const ids = Object.values(nodesObj).map(n => n.id);
+  if (!ids.length) return [];
+  const adjacency = {};
+  for (const a of Object.values(arrowsObj)) {
+    if (nodesObj[a.sourceId] && nodesObj[a.targetId]) {
+      (adjacency[a.sourceId] = adjacency[a.sourceId] || new Set()).add(a.targetId);
+      (adjacency[a.targetId] = adjacency[a.targetId] || new Set()).add(a.sourceId);
+    }
+  }
+  const seen = new Set();
+  const stack = [ids[0]];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const nb of (adjacency[cur] || [])) stack.push(nb);
+  }
+  return Object.values(nodesObj)
+    .filter(n => !seen.has(n.id))
+    .map(n => F('R06', 'error', `Der Block »${displayLabel(n)}« gehört zu einem vom restlichen Ablaufplan getrennten Teil.`, [n.id]));
+}
+
+// ---- B. Verbindungen und Knotengrade ----
+
+function checkR08DanglingEdges(nodesObj, arrowsObj) {
+  const findings = [];
+  for (const a of Object.values(arrowsObj)) {
+    if (!nodesObj[a.sourceId] || !nodesObj[a.targetId]) {
+      findings.push(F('R08', 'error', 'Ein Pfeil verweist auf einen nicht (mehr) vorhandenen Block – die Datei scheint beschädigt zu sein.', [], [a.id]));
+    }
+  }
+  return findings;
+}
+
+function checkNodeDegrees(nodesObj, incoming, outgoing) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    const role = roleOf(node);
+    const label = displayLabel(node);
+    const inCount = (incoming[node.id] || []).length;
+    const outCount = (outgoing[node.id] || []).length;
+    if (role === 'start') {
+      if (inCount > 0) findings.push(F('R10', 'error', `Der Start-Block »${label}« darf keinen eingehenden Pfeil haben.`, [node.id]));
+      if (outCount === 0) findings.push(F('R10', 'error', `Der Start-Block »${label}« hat keinen ausgehenden Pfeil.`, [node.id]));
+      else if (outCount > 1) findings.push(F('R10', 'error', `Der Start-Block »${label}« hat ${outCount} ausgehende Pfeile – erlaubt ist genau einer.`, [node.id]));
+    } else if (role === 'stop') {
+      if (inCount === 0) findings.push(F('R10', 'error', `Der Stop-Block »${label}« hat keinen eingehenden Pfeil.`, [node.id]));
+      if (outCount > 0) findings.push(F('R10', 'error', `Der Stop-Block »${label}« darf keinen ausgehenden Pfeil haben.`, [node.id]));
+    } else if (role === 'decision') {
+      if (inCount === 0) findings.push(F('R10', 'error', `Die Verzweigung »${label}« hat keinen eingehenden Pfeil.`, [node.id]));
+      if (outCount !== 2) findings.push(F('R10', 'error', `Die Verzweigung »${label}« hat ${outCount} ausgehende Pfeile. Eine Verzweigung braucht genau zwei: Ja und Nein.`, [node.id]));
+    } else if (role === 'branchEnd') {
+      if (inCount !== 2) findings.push(F('R10', 'error', `Der Verzweigung-zu-Block »${label}« hat ${inCount} eingehende Pfeile statt der geforderten zwei (je einer pro Zweig).`, [node.id]));
+      if (outCount !== 1) findings.push(F('R10', 'error', `Der Verzweigung-zu-Block »${label}« hat ${outCount} ausgehende Pfeile statt genau einem.`, [node.id]));
     } else {
-      if (i===0) issues.push(`Block '${n.label}' ist nicht erreichbar.`);
-      if (o===0) issues.push(`Block '${n.label}' hat keinen Ausgang.`);
-      if (o> 1) issues.push(`Block '${n.label}' hat mehrere ausgehende Verbindungen (${o}), ist aber kein Entscheidungs-Symbol – doppelter Weg ohne Verzweigung.`);
-      if (!isConnector && i> 1) issues.push(`Block '${n.label}' hat mehrere eingehende Verbindungen (${i}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.`);
+      const kind = ROLE_NAMES_DE[role] || role;
+      if (inCount === 0) findings.push(F('R10', 'error', `Der ${kind}-Block »${label}« ist nicht erreichbar (kein eingehender Pfeil).`, [node.id]));
+      if (outCount === 0) findings.push(F('R10', 'error', `Der ${kind}-Block »${label}« hat keinen ausgehenden Pfeil.`, [node.id]));
+      else if (outCount > 1) findings.push(F('R10', 'error', `Der ${kind}-Block »${label}« hat ${outCount} ausgehende Pfeile, ist aber kein Verzweigungsblock.`, [node.id]));
     }
   }
-  info.push(decisionCount
-    ? `Gefundene Verzweigungen (Entscheidungs-Blöcke): ${decisionCount}.`
-    : 'Keine Verzweigung (Entscheidungs-Block) im PAP gefunden.');
+  return findings;
+}
 
-  if (starts.length) {
-    const reach = new Set(), stk = [starts[0].id];
-    while(stk.length){ const c=stk.pop(); if(reach.has(c))continue; reach.add(c); for(const a of(out[c]||[]))stk.push(a.targetId); }
-    for (const n of Object.values(nodes))
-      if (!reach.has(n.id)) issues.push(`Block '${n.label}' vom Start nicht erreichbar.`);
-  }
-
-  // Pfeile dürfen im PAP nie nach oben führen – Wiederholungen werden über
-  // die Schleife/Schleife-zu-Symbole abgebildet, nicht über Rücksprünge.
-  for (const a of Object.values(arrows)) {
-    const s = nodes[a.sourceId], t = nodes[a.targetId];
-    if (s && t && t.y <= s.y - 20) {
-      issues.push(`Pfeil von '${s.label}' nach '${t.label}' führt nach oben – im PAP nicht zulässig, Wiederholungen gehören in ein Schleife/Schleife-zu-Paar.`);
+function checkR11SelfLoop(nodesObj, arrowsObj) {
+  const findings = [];
+  for (const a of Object.values(arrowsObj)) {
+    if (a.sourceId === a.targetId && nodesObj[a.sourceId]) {
+      findings.push(F('R11', 'error', `Der Block »${displayLabel(nodesObj[a.sourceId])}« ist über einen Pfeil mit sich selbst verbunden.`, [a.sourceId], [a.id]));
     }
   }
+  return findings;
+}
 
-  // Schleifen müssen auf jedem Pfad korrekt geschachtelt geschlossen werden
-  // (jede 'Schleife' braucht eine passende 'Schleife zu' davor, dass der Pfad endet).
-  if (starts.length) {
-    const seenStates = new Set();
-    const walk = (id, stack) => {
-      const key = id + '|' + stack.join(',');
-      if (seenStates.has(key)) return;
-      seenStates.add(key);
-      const n = nodes[id];
-      if (!n) return;
-      let nextStack = stack;
-      if (n.templateLabel === 'Schleife') {
-        nextStack = [...stack, n.id];
-      } else if (n.templateLabel === 'Schleife zu') {
-        if (!stack.length) {
-          issues.push(`'Schleife zu' bei '${n.label}' hat keine zugehörige offene Schleife.`);
-        } else {
-          nextStack = stack.slice(0, -1);
+function checkR12DuplicateEdges(nodesObj, arrowsObj) {
+  const findings = [];
+  const seen = new Map();
+  for (const a of Object.values(arrowsObj)) {
+    const key = `${a.sourceId}|${a.sourcePort}|${a.targetId}|${a.targetPort}`;
+    if (seen.has(key)) {
+      const s = nodesObj[a.sourceId], t = nodesObj[a.targetId];
+      findings.push(F('R12', 'warning',
+        `Zwischen »${s ? displayLabel(s) : '?'}« und »${t ? displayLabel(t) : '?'}« gibt es doppelte Pfeile.`,
+        [a.sourceId, a.targetId].filter(id => nodesObj[id]), [seen.get(key), a.id]));
+    } else {
+      seen.set(key, a.id);
+    }
+  }
+  return findings;
+}
+
+// ---- C. Geometrie ----
+
+function checkGeometryPorts(nodesObj, arrowsObj) {
+  const findings = [];
+  for (const a of Object.values(arrowsObj)) {
+    const source = nodesObj[a.sourceId], target = nodesObj[a.targetId];
+    if (!source || !target) continue;
+    const isBranchEdge = roleOf(source) === 'decision' && a.sourcePort === 'right';
+    if (a.sourcePort === 'top' || a.targetPort === 'bottom') {
+      findings.push(F('R14', 'error',
+        `Der Pfeil von »${displayLabel(source)}« nach »${displayLabel(target)}« beginnt oder endet an der falschen Seite – Pfeile müssen unten beginnen und oben am nächsten Block enden.`,
+        [source.id, target.id], [a.id]));
+      continue;
+    }
+    if (a.sourcePort === 'right' && !isBranchEdge) {
+      findings.push(F('R14', 'error',
+        `Der Pfeil von »${displayLabel(source)}« verlässt den Block seitlich, obwohl es kein Verzweigungsblock ist – Pfeile müssen unten beginnen.`,
+        [source.id], [a.id]));
+    }
+    if (isBranchEdge && a.targetPort !== 'right' && a.targetPort !== 'top') {
+      findings.push(F('R15', 'error',
+        `Der seitliche Zweig der Verzweigung »${displayLabel(source)}« muss rechts oder oben in den nächsten Block münden.`,
+        [source.id, target.id], [a.id]));
+    }
+    if (a.sourcePort !== 'right' && target.y < source.y) {
+      findings.push(F('R17', 'warning',
+        `Der Pfeil von »${displayLabel(source)}« nach »${displayLabel(target)}« führt nach oben statt nach unten.`,
+        [source.id, target.id], [a.id]));
+    }
+  }
+  for (const node of Object.values(nodesObj)) {
+    if (roleOf(node) !== 'decision') continue;
+    const portsUsed = Object.values(arrowsObj).filter(a => a.sourceId === node.id).map(a => a.sourcePort);
+    if (portsUsed.length === 2 && portsUsed[0] === portsUsed[1]) {
+      findings.push(F('R15', 'error',
+        `Beide Zweige der Verzweigung »${displayLabel(node)}« verlassen den Block an derselben Seite – Ja und Nein sollten unten und rechts herausgeführt werden.`,
+        [node.id]));
+    }
+  }
+  return findings;
+}
+
+function checkR19Overlaps(nodesObj) {
+  const findings = [];
+  const items = Object.values(nodesObj);
+  if (items.length > 500) return findings;
+  for (let i = 0; i < items.length; i++) {
+    const [ax1, ay1, ax2, ay2] = bbox(items[i]);
+    for (let j = i + 1; j < items.length; j++) {
+      const [bx1, by1, bx2, by2] = bbox(items[j]);
+      if (ax1 < bx2 && ax2 > bx1 && ay1 < by2 && ay2 > by1) {
+        findings.push(F('R19', 'warning', `Die Blöcke »${displayLabel(items[i])}« und »${displayLabel(items[j])}« überlappen sich.`, [items[i].id, items[j].id]));
+      }
+    }
+  }
+  return findings;
+}
+
+function segmentsIntersect(p1, p2, p3, p4) {
+  const ccw = (a, b, c) => (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0]);
+  return ccw(p1, p3, p4) !== ccw(p2, p3, p4) && ccw(p1, p2, p3) !== ccw(p1, p2, p4);
+}
+
+function arrowPolyline(nodesObj, a) {
+  const source = nodesObj[a.sourceId], target = nodesObj[a.targetId];
+  if (!source || !target) return null;
+  return [ports(source)[a.sourcePort], ...(a.waypoints || []), ports(target)[a.targetPort]];
+}
+
+function checkR18Crossings(nodesObj, arrowsObj) {
+  if (Object.keys(nodesObj).length > 500) return [];
+  const findings = [];
+  const ids = Object.keys(arrowsObj);
+  const polylines = {};
+  for (const id of ids) polylines[id] = arrowPolyline(nodesObj, arrowsObj[id]);
+  for (let i = 0; i < ids.length; i++) {
+    const a1 = arrowsObj[ids[i]];
+    const p1 = polylines[ids[i]];
+    if (!p1) continue;
+    for (let j = i + 1; j < ids.length; j++) {
+      const a2 = arrowsObj[ids[j]];
+      if (a1.sourceId === a2.sourceId || a1.sourceId === a2.targetId ||
+          a1.targetId === a2.sourceId || a1.targetId === a2.targetId) continue;
+      const p2 = polylines[ids[j]];
+      if (!p2) continue;
+      let crossed = false;
+      for (let k = 0; k < p1.length - 1 && !crossed; k++) {
+        for (let l = 0; l < p2.length - 1; l++) {
+          if (segmentsIntersect(p1[k], p1[k + 1], p2[l], p2[l + 1])) { crossed = true; break; }
         }
       }
-      const outs = out[id] || [];
-      if (!outs.length && nextStack.length) {
-        const openNode = nodes[nextStack[nextStack.length - 1]];
-        issues.push(`Schleife '${openNode ? openNode.label : '?'}' wird nie geschlossen (Pfad endet bei '${n.label}').`);
+      if (crossed) {
+        findings.push(F('R18', 'warning', 'Zwei Pfeile kreuzen sich – das lässt sich meist durch Umsortieren der Blöcke vermeiden.', [], [a1.id, a2.id]));
       }
-      for (const a of outs) walk(a.targetId, nextStack);
-    };
-    walk(starts[0].id, []);
+    }
+  }
+  return findings;
+}
+
+// ---- D. Kontrollstrukturen ----
+
+function checkR25EmptyBodies(nodesObj, outgoing) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    const role = roleOf(node);
+    if (role === 'decision') {
+      for (const a of (outgoing[node.id] || [])) {
+        const target = nodesObj[a.targetId];
+        if (target && roleOf(target) === 'branchEnd') {
+          findings.push(F('R25', 'warning', `Ein Zweig der Verzweigung »${displayLabel(node)}« ist leer (der Pfeil geht direkt zum Verzweigung-zu-Block).`, [node.id, target.id], [a.id]));
+        }
+      }
+    } else if (role === 'loopStart') {
+      for (const a of (outgoing[node.id] || [])) {
+        const target = nodesObj[a.targetId];
+        if (target && roleOf(target) === 'loopEnd') {
+          findings.push(F('R25', 'warning', `Der Rumpf der Schleife »${displayLabel(node)}« ist leer (der Pfeil geht direkt zum Schleife-zu-Block).`, [node.id, target.id], [a.id]));
+        }
+      }
+    }
+  }
+  return findings;
+}
+
+function analyzeControlStructureNesting(nodesObj, outgoing) {
+  const findings = [];
+  const starts = Object.values(nodesObj).filter(n => roleOf(n) === 'start');
+  if (!starts.length) return { findings, loopBodyNodes: {} };
+
+  const decisionMerges = {};
+  const loopBodyNodes = {};
+  const reported = new Set();
+  const seenStates = new Set();
+  const MAX_STATES = 50000;
+
+  function walk(nodeId, stack) {
+    if (seenStates.size > MAX_STATES) return;
+    const key = nodeId + '|' + stack.map(m => m[0] + ':' + m[1]).join(',');
+    if (seenStates.has(key)) return;
+    seenStates.add(key);
+    const node = nodesObj[nodeId];
+    if (!node) return;
+
+    for (const [kind, markerId] of stack) {
+      if (kind === 'LOOP') (loopBodyNodes[markerId] = loopBodyNodes[markerId] || new Set()).add(nodeId);
+    }
+
+    const role = roleOf(node);
+    let newStack = stack;
+    if (role === 'decision') {
+      newStack = [...stack, ['DEC', nodeId]];
+    } else if (role === 'loopStart') {
+      newStack = [...stack, ['LOOP', nodeId]];
+    } else if (role === 'branchEnd') {
+      if (stack.length && stack[stack.length - 1][0] === 'DEC') {
+        const decId = stack[stack.length - 1][1];
+        (decisionMerges[decId] = decisionMerges[decId] || new Set()).add(nodeId);
+        newStack = stack.slice(0, -1);
+      } else if (!reported.has('branchEnd|' + nodeId)) {
+        reported.add('branchEnd|' + nodeId);
+        findings.push(F('R22', 'error',
+          `Der Verzweigung-zu-Block »${displayLabel(node)}« schließt keine offene Verzweigung an dieser Stelle – Verzweigung und Schleife müssen sauber ineinander verschachtelt sein.`,
+          [nodeId]));
+      }
+    } else if (role === 'loopEnd') {
+      if (stack.length && stack[stack.length - 1][0] === 'LOOP') {
+        newStack = stack.slice(0, -1);
+      } else if (!reported.has('loopEnd|' + nodeId)) {
+        reported.add('loopEnd|' + nodeId);
+        findings.push(F('R22', 'error',
+          `Der Schleife-zu-Block »${displayLabel(node)}« schließt keine offene Schleife an dieser Stelle – Verzweigung und Schleife müssen sauber ineinander verschachtelt sein.`,
+          [nodeId]));
+      }
+    }
+
+    const outs = outgoing[nodeId] || [];
+    if (!outs.length && role === 'stop' && newStack.length) {
+      for (const [kind, markerId] of newStack) {
+        const rkey = kind + '|' + markerId;
+        if (reported.has(rkey)) continue;
+        reported.add(rkey);
+        const markerNode = nodesObj[markerId];
+        const markerLabel = markerNode ? displayLabel(markerNode) : '?';
+        if (kind === 'DEC') {
+          findings.push(F('R20', 'error', `Die Verzweigung »${markerLabel}« wird auf diesem Pfad nie durch einen Verzweigung-zu-Block geschlossen.`, [markerId]));
+        } else {
+          findings.push(F('R20', 'error', `Die Schleife »${markerLabel}« wird auf diesem Pfad nie durch einen Schleife-zu-Block geschlossen.`, [markerId]));
+        }
+      }
+    }
+    for (const a of outs) walk(a.targetId, newStack);
   }
 
-  const uniqueIssues = [...new Set(issues)];
-  showModal('Plausibilitätsprüfung',
-    (uniqueIssues.length ? 'Gefundene Probleme:\n\n' + uniqueIssues.map(i=>'• '+i).join('\n') + '\n\n'
-                  : 'Keine Probleme gefunden.\nDer Algorithmus scheint plausibel. ✓\n\n')
-    + info.map(i=>'ℹ ' + i).join('\n'));
+  walk(starts[0].id, []);
+
+  for (const [decId, merges] of Object.entries(decisionMerges)) {
+    if (merges.size > 1) {
+      const dec = nodesObj[decId];
+      findings.push(F('R23', 'error',
+        `Die beiden Zweige der Verzweigung »${dec ? displayLabel(dec) : decId}« münden an unterschiedlichen Verzweigung-zu-Blöcken – beide Zweige müssen im selben Block zusammengeführt werden.`,
+        [Number(decId), ...merges]));
+    }
+  }
+
+  return { findings, loopBodyNodes };
+}
+
+function checkR26LoopCondition(nodesObj, loopBodyNodes) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    if (roleOf(node) !== 'loopStart') continue;
+    const body = new Set(loopBodyNodes[node.id] || []);
+    body.delete(node.id);
+    const conditionVars = extractIdentifiers(node.label);
+    if (!conditionVars.size) continue;
+    const modified = new Set();
+    for (const bodyId of body) {
+      const bodyNode = nodesObj[bodyId];
+      if (bodyNode && roleOf(bodyNode) === 'process') {
+        const assignment = splitAssignment(bodyNode.label);
+        if (assignment) {
+          for (const v of extractIdentifiers(assignment[0])) modified.add(v);
+        }
+      }
+    }
+    const overlap = [...conditionVars].some(v => modified.has(v));
+    if (!overlap) {
+      findings.push(F('R26', 'warning',
+        `Die Bedingung der Schleife »${displayLabel(node)}« verwendet nur Variablen, die im Schleifenrumpf nie verändert werden – möglicherweise eine Endlosschleife.`,
+        [node.id]));
+    }
+  }
+  return findings;
+}
+
+// ---- E. Kantenbeschriftungen ----
+
+function checkR27R28BranchLabels(nodesObj, arrowsObj, outgoing) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    if (roleOf(node) !== 'decision') continue;
+    const outs = outgoing[node.id] || [];
+    if (outs.length !== 2) continue;
+    const labelled = outs.map(a => [a, (a.label || '').trim().toLowerCase()]);
+    const kinds = labelled.map(([, lbl]) => (YES_WORDS.has(lbl) ? 'yes' : NO_WORDS.has(lbl) ? 'no' : null));
+    if (kinds.includes(null)) {
+      findings.push(F('R27', 'error', `Beide Pfeile der Verzweigung »${displayLabel(node)}« müssen mit »Ja« bzw. »Nein« beschriftet sein.`, [node.id], labelled.map(([a]) => a.id)));
+    } else if (kinds[0] === kinds[1]) {
+      findings.push(F('R27', 'error', `Die beiden Pfeile der Verzweigung »${displayLabel(node)}« sind beide mit »${labelled[0][1]}« beschriftet – sie müssen sich unterscheiden (Ja/Nein).`, [node.id], labelled.map(([a]) => a.id)));
+    }
+  }
+  for (const a of Object.values(arrowsObj)) {
+    const source = nodesObj[a.sourceId];
+    if (source && roleOf(source) === 'decision') continue;
+    const label = (a.label || '').trim().toLowerCase();
+    if (YES_WORDS.has(label) || NO_WORDS.has(label)) {
+      findings.push(F('R28', 'error', `Der Pfeil von »${source ? displayLabel(source) : '?'}« trägt die Beschriftung »${a.label}«, stammt aber nicht von einer Verzweigung.`, source ? [source.id] : [], [a.id]));
+    }
+  }
+  return findings;
+}
+
+// ---- F. Blockinhalte und Semantik ----
+
+function checkR29Labels(nodesObj) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    const role = roleOf(node);
+    if (UNLABELED.has(shapeOf(node))) continue;
+    const label = (node.label || '').trim();
+    if (!label) {
+      findings.push(F('R29', 'error', 'Ein Block ohne Beschriftung wurde gefunden.', [node.id]));
+      continue;
+    }
+    if (role === 'start' && label.toLowerCase() !== 'start') {
+      findings.push(F('R29', 'error', 'Der Start-Block muss den Text »Start« tragen.', [node.id]));
+    }
+    if (role === 'stop' && label.toLowerCase() !== 'stop') {
+      findings.push(F('R29', 'error', 'Der Stop-Block muss den Text »Stop« tragen.', [node.id]));
+    }
+  }
+  return findings;
+}
+
+function checkR30DecisionContent(nodesObj) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    if (roleOf(node) !== 'decision') continue;
+    const label = node.label || '';
+    const assignment = splitAssignment(label);
+    const hasComparison = COMPARISON_OPS.some(op => label.includes(op));
+    const hasBoolWord = BOOL_WORDS.some(w => label.toLowerCase().includes(w));
+    if (assignment) {
+      findings.push(F('R30', 'error', `Die Verzweigung »${label}« enthält eine Zuweisung – eine Verzweigung darf nur eine Ja/Nein-Bedingung enthalten.`, [node.id]));
+    } else if (!hasComparison && !hasBoolWord) {
+      findings.push(F('R30', 'error', `Die Verzweigung »${label}« enthält keine erkennbare Ja/Nein-Bedingung (z. B. mit ==, <, >, und, oder).`, [node.id]));
+    }
+  }
+  return findings;
+}
+
+function checkR31ProcessContent(nodesObj) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    if (roleOf(node) !== 'process') continue;
+    const label = node.label || '';
+    const assignment = splitAssignment(label);
+    const hasComparison = COMPARISON_OPS.some(op => label.includes(op));
+    if (hasComparison && !assignment) {
+      findings.push(F('R31', 'error', `Die Anweisung »${label}« enthält einen Vergleich, aber keine Zuweisung – gehört das nicht in einen Verzweigungsblock?`, [node.id]));
+    }
+  }
+  return findings;
+}
+
+function checkR33Atomicity(nodesObj) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    if (UNLABELED.has(shapeOf(node))) continue;
+    const label = node.label || '';
+    if (label.includes(';')) {
+      findings.push(F('R33', 'warning', `Der Block »${label}« enthält mehrere durch »;« getrennte Anweisungen – pro Block sollte nur eine Anweisung stehen.`, [node.id]));
+    }
+  }
+  return findings;
+}
+
+function topologicalOrder(nodesObj, outgoing, startId) {
+  const reachable = new Set();
+  const stack = [startId];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (reachable.has(cur)) continue;
+    reachable.add(cur);
+    for (const a of (outgoing[cur] || [])) stack.push(a.targetId);
+  }
+  const inDegree = {};
+  for (const id of reachable) inDegree[id] = 0;
+  for (const id of reachable) {
+    for (const a of (outgoing[id] || [])) {
+      if (a.targetId in inDegree) inDegree[a.targetId] += 1;
+    }
+  }
+  const queue = Object.keys(inDegree).filter(id => inDegree[id] === 0).map(Number);
+  const order = [];
+  while (queue.length) {
+    const cur = queue.pop();
+    order.push(cur);
+    for (const a of (outgoing[cur] || [])) {
+      if (a.targetId in inDegree) {
+        inDegree[a.targetId] -= 1;
+        if (inDegree[a.targetId] === 0) queue.push(a.targetId);
+      }
+    }
+  }
+  return order.length === reachable.size ? order : null;
+}
+
+function checkR34Dataflow(nodesObj, incoming, outgoing) {
+  if (Object.keys(nodesObj).length > 500) return [];
+  const starts = Object.values(nodesObj).filter(n => roleOf(n) === 'start');
+  if (starts.length !== 1) return [];
+  const order = topologicalOrder(nodesObj, outgoing, starts[0].id);
+  if (order === null) {
+    return [F('R34', 'warning', 'Der Kontrollfluss enthält einen Kreis – die Datenfluss-Analyse (R34) ist für diesen Plan nicht durchführbar.')];
+  }
+  const findings = [];
+  const assignedOut = {};
+  for (const nodeId of order) {
+    const node = nodesObj[nodeId];
+    const preds = incoming[nodeId] || [];
+    const predSets = preds.filter(a => assignedOut[a.sourceId]).map(a => assignedOut[a.sourceId]);
+    let assignedIn;
+    if (predSets.length) {
+      assignedIn = new Set(predSets[0]);
+      for (const s of predSets.slice(1)) {
+        for (const v of [...assignedIn]) if (!s.has(v)) assignedIn.delete(v);
+      }
+    } else {
+      assignedIn = new Set();
+    }
+
+    const role = roleOf(node);
+    const label = node.label || '';
+    let reads, assignedHere = new Set();
+    if (role === 'decision') {
+      reads = extractIdentifiers(label);
+    } else if (role === 'process') {
+      const assignment = splitAssignment(label);
+      if (assignment) {
+        reads = extractIdentifiers(assignment[1]);
+        assignedHere = extractIdentifiers(assignment[0]);
+      } else {
+        reads = extractIdentifiers(label);
+      }
+    } else {
+      reads = new Set();
+    }
+
+    for (const v of [...reads].filter(v => !assignedIn.has(v)).sort()) {
+      findings.push(F('R34', 'warning', `Die Variable »${v}« wird in »${label}« gelesen, bevor sie auf jedem Pfad einen Wert erhalten hat.`, [nodeId]));
+    }
+    const combined = new Set(assignedIn);
+    for (const v of assignedHere) combined.add(v);
+    assignedOut[nodeId] = combined;
+  }
+  return findings;
+}
+
+function checkR35OutputPresent(nodesObj, outgoing) {
+  const starts = Object.values(nodesObj).filter(n => roleOf(n) === 'start');
+  if (!starts.length) return [];
+  const visited = new Set();
+  const stopsWithoutOutput = new Set();
+  const stack = [starts[0].id];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    const node = nodesObj[cur];
+    if (!node) continue;
+    if (roleOf(node) === 'stop') { stopsWithoutOutput.add(cur); continue; }
+    if (isOutputBlock(node)) continue;
+    for (const a of (outgoing[cur] || [])) stack.push(a.targetId);
+  }
+  return [...stopsWithoutOutput].map(stopId =>
+    F('R35', 'warning', `Auf mindestens einem Pfad zum Stop-Block »${displayLabel(nodesObj[stopId])}« erfolgt keine Ausgabe – Ergebnisse sollten sichtbar gemacht werden.`, [stopId]));
+}
+
+function checkR36Subprocess(nodesObj) {
+  const findings = [];
+  for (const node of Object.values(nodesObj)) {
+    if (roleOf(node) !== 'subprocess') continue;
+    if (!(node.label || '').trim() || !node.subdiagram) continue;
+    let payload;
+    try {
+      payload = JSON.parse(node.subdiagram);
+    } catch (e) {
+      findings.push(F('R36', 'error', `Die Funktion »${node.label}« enthält einen beschädigten Unterablaufplan.`, [node.id]));
+      continue;
+    }
+    const subNodes = {};
+    for (const item of (payload.nodes || [])) subNodes[item.id] = item;
+    const subArrows = {};
+    for (const item of (payload.arrows || [])) subArrows[item.id] = item;
+    if (Object.values(subNodes).filter(n => roleOf(n) === 'start').length !== 1) {
+      findings.push(F('R36', 'error', `Die Funktion »${node.label}« hat keinen eindeutigen Start-Block im Unterablaufplan.`, [node.id]));
+    }
+    for (const nested of evaluateChart(subNodes, subArrows)) {
+      findings.push(F(nested.rule, nested.severity, `In Funktion »${node.label}«: ${nested.message}`, [node.id]));
+    }
+  }
+  return findings;
+}
+
+// ---- Zusammenführung ----
+
+function evaluateChart(nodesObj, arrowsObj) {
+  const { outgoing, incoming } = buildEdgeMaps(nodesObj, arrowsObj);
+  let findings = [];
+  findings = findings.concat(checkR01Start(nodesObj));
+  findings = findings.concat(checkR02StopExists(nodesObj));
+  findings = findings.concat(checkR03MultipleStops(nodesObj));
+  findings = findings.concat(checkR04ReachableFromStart(nodesObj, outgoing));
+  findings = findings.concat(checkR05ReachStop(nodesObj, incoming));
+  findings = findings.concat(checkR06Connected(nodesObj, arrowsObj));
+  findings = findings.concat(checkR08DanglingEdges(nodesObj, arrowsObj));
+  findings = findings.concat(checkNodeDegrees(nodesObj, incoming, outgoing));
+  findings = findings.concat(checkR11SelfLoop(nodesObj, arrowsObj));
+  findings = findings.concat(checkR12DuplicateEdges(nodesObj, arrowsObj));
+  findings = findings.concat(checkGeometryPorts(nodesObj, arrowsObj));
+  findings = findings.concat(checkR19Overlaps(nodesObj));
+  findings = findings.concat(checkR18Crossings(nodesObj, arrowsObj));
+  findings = findings.concat(checkR25EmptyBodies(nodesObj, outgoing));
+  const { findings: nestingFindings, loopBodyNodes } = analyzeControlStructureNesting(nodesObj, outgoing);
+  findings = findings.concat(nestingFindings);
+  findings = findings.concat(checkR26LoopCondition(nodesObj, loopBodyNodes));
+  findings = findings.concat(checkR27R28BranchLabels(nodesObj, arrowsObj, outgoing));
+  findings = findings.concat(checkR29Labels(nodesObj));
+  findings = findings.concat(checkR30DecisionContent(nodesObj));
+  findings = findings.concat(checkR31ProcessContent(nodesObj));
+  findings = findings.concat(checkR33Atomicity(nodesObj));
+  findings = findings.concat(checkR34Dataflow(nodesObj, incoming, outgoing));
+  findings = findings.concat(checkR35OutputPresent(nodesObj, outgoing));
+  findings = findings.concat(checkR36Subprocess(nodesObj));
+  findings.sort((a, b) => {
+    const sa = a.severity === 'error' ? 0 : 1, sb = b.severity === 'error' ? 0 : 1;
+    if (sa !== sb) return sa - sb;
+    return a.rule.localeCompare(b.rule);
+  });
+  return findings;
+}
+
+function checkDiagram() {
+  const findings = evaluateChart(nodes, arrows);
+
+  selNodes = new Set(findings.flatMap(f => f.nodeIds).filter(id => nodes[id]));
+  const arrowHit = findings.flatMap(f => f.arrowIds).find(id => arrows[id]);
+  selArrow = (arrowHit !== undefined) ? arrowHit : null;
+  redraw();
+
+  if (!findings.length) {
+    showModal('Plausibilitätsprüfung', 'Keine Probleme gefunden.\nDer Algorithmus scheint plausibel. ✓');
+    return;
+  }
+  const errors = findings.filter(f => f.severity === 'error');
+  const warns = findings.filter(f => f.severity === 'warning');
+  const fmt = f => `[${f.rule}] ${f.message}`;
+  const parts = [];
+  if (errors.length) parts.push(`Fehler (${errors.length}):\n` + errors.map(f => '- ' + fmt(f)).join('\n'));
+  if (warns.length) parts.push(`Hinweise (${warns.length}):\n` + warns.map(f => '- ' + fmt(f)).join('\n'));
+  showModal('Plausibilitätsprüfung', parts.join('\n\n'));
 }
 
 // ════════════════════════════════════════════════════════════

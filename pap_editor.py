@@ -1,12 +1,13 @@
 import json
 import math
 import os
+import re
 import sys
 import tkinter as tk
 from xml.sax.saxutils import escape
 from dataclasses import dataclass, field
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
@@ -271,6 +272,877 @@ class Arrow:
     target_port: str
     waypoints: List[Tuple[float, float]] = field(default_factory=list)
     label: str = ""
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Plausibilitätsprüfung (Regelwerk für PAP / DIN 66001)
+# ════════════════════════════════════════════════════════════════════════
+#
+# Jede Regel hat eine ID ("R01" …), einen Schweregrad ("error"/"warning") und
+# erzeugt kurze, an die Schülerin/den Schüler gerichtete Meldungen auf
+# Deutsch. Die Regeln orientieren sich am allgemeinen PAP-Regelkatalog,
+# wurden aber an das Datenmodell dieses Editors angepasst. Folgende Regeln
+# des allgemeinen Katalogs entfallen bewusst, weil es im Editor kein
+# entsprechendes Konzept gibt:
+#   R07  Block-IDs sind über das dict[id]-Modell technisch immer eindeutig.
+#   R13  Es gibt keinen eigenständigen Seitenverweis-Konnektor; "Verzweigung
+#        zu" übernimmt ausschließlich die Rolle des Verzweigungsendes.
+#   R16  Schleifen haben hier keinen gezeichneten Rücksprungpfeil (kein
+#        "links"-Port) – die Wiederholung ergibt sich rein aus dem
+#        Schleife/Schleife-zu-Paar, siehe R20/R22.
+#   R21  SESE wird nicht als eigene Prüfung umgesetzt, sondern ergibt sich
+#        als Nebenprodukt der Verschachtelungsprüfung (R20/R22/R23): eine
+#        Verletzung führt dort zu einer Meldung über nicht passende
+#        Verschachtelung.
+#   R32  Es gibt keinen eigenen Eingabe/Ausgabe-Blocktyp; R35 erkennt
+#        Ausgaben heuristisch anhand von Schlüsselwörtern in Anweisungen.
+#
+# Zum Hinzufügen einer neuen Regel: eine Funktion `check_rXX_...(...)`
+# schreiben, die eine `List[Finding]` zurückgibt, und den Aufruf in
+# `evaluate_chart` ergänzen. Siehe README für Details.
+
+ROLE_BY_TEMPLATE = {
+    "Start": "start",
+    "Stop": "stop",
+    "Anweisung": "process",
+    "Funktion": "subprocess",
+    "Entscheidung": "decision",
+    "Verzweigung zu": "branchEnd",
+    "Schleife": "loopStart",
+    "Schleife zu": "loopEnd",
+}
+
+ROLE_NAMES_DE = {
+    "process": "Anweisungs",
+    "loopStart": "Schleifen",
+    "loopEnd": "Schleife-zu",
+    "subprocess": "Funktions",
+}
+
+COMPARISON_OPS = ("==", "!=", "<=", ">=", "<", ">")
+BOOL_WORDS = ("und", "oder", "nicht", "and", "or", "not", "&&", "||")
+YES_WORDS = {"ja", "yes", "j", "y", "true", "wahr"}
+NO_WORDS = {"nein", "no", "n", "false", "falsch"}
+OUTPUT_KEYWORDS = ("ausgabe", "gib aus", "ausgeben", "ausgeb", "schreibe", "print", "cout", "system.out", "write")
+IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+ASSIGN_RE = re.compile(r":=|<-|(?<![=!<>])=(?!=)")
+_STRING_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+_STOPWORDS = {
+    "und", "oder", "nicht", "and", "or", "not", "true", "false", "wahr", "falsch",
+    "then", "dann", "if", "wenn", "sonst", "else", "ausgabe", "eingabe", "print",
+    "input", "cout", "system", "out", "write", "gib", "aus", "schreibe", "lies",
+    "einlesen",
+}
+
+
+def role_of(node: "Node") -> str:
+    return ROLE_BY_TEMPLATE.get(node.template_label, "process")
+
+
+_UNLABELED_ROLE_NAMES = {"branchEnd": "Verzweigung zu", "loopEnd": "Schleife zu"}
+
+
+def _display_label(node: "Node") -> str:
+    """Label for messages; falls back to a role name for intentionally unlabelled shapes."""
+    if node.label and node.label.strip():
+        return node.label
+    return _UNLABELED_ROLE_NAMES.get(role_of(node), node.label or "?")
+
+
+def split_assignment(text: str) -> Optional[Tuple[str, str]]:
+    """Split a block label at its assignment operator (=, :=, <-), ignoring ==, !=, <=, >=."""
+    match = ASSIGN_RE.search(text or "")
+    if not match:
+        return None
+    return text[: match.start()], text[match.end() :]
+
+
+def extract_identifiers(text: str) -> Set[str]:
+    """Identifiers referenced in a label; text inside quotes is a literal, not a variable."""
+    cleaned = _STRING_LITERAL_RE.sub(" ", text or "")
+    return {ident for ident in IDENT_RE.findall(cleaned) if ident.lower() not in _STOPWORDS}
+
+
+def is_output_block(node: "Node") -> bool:
+    if role_of(node) != "process":
+        return False
+    label = (_display_label(node) or "").strip().lower()
+    return any(label.startswith(kw) or kw in label for kw in OUTPUT_KEYWORDS)
+
+
+@dataclass
+class Finding:
+    rule: str
+    severity: str  # "error" | "warning"
+    message: str
+    node_ids: List[int] = field(default_factory=list)
+    arrow_ids: List[int] = field(default_factory=list)
+
+
+def _build_edge_maps(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -> Tuple[Dict[int, List["Arrow"]], Dict[int, List["Arrow"]]]:
+    outgoing: Dict[int, List[Arrow]] = {}
+    incoming: Dict[int, List[Arrow]] = {}
+    for arrow in arrows.values():
+        if arrow.source_id in nodes and arrow.target_id in nodes:
+            outgoing.setdefault(arrow.source_id, []).append(arrow)
+            incoming.setdefault(arrow.target_id, []).append(arrow)
+    return outgoing, incoming
+
+
+# ---- A. Globale Struktur --------------------------------------------------
+
+def check_r01_start(nodes: Dict[int, "Node"]) -> List[Finding]:
+    starts = [n for n in nodes.values() if role_of(n) == "start"]
+    if not starts:
+        return [Finding("R01", "error", "Es gibt keinen Start-Block – jeder Ablauf braucht genau einen.", [], [])]
+    if len(starts) > 1:
+        return [Finding("R01", "error", f"Es gibt {len(starts)} Start-Blöcke – es darf nur genau einen geben.", [n.id for n in starts], [])]
+    return []
+
+
+def check_r02_stop_exists(nodes: Dict[int, "Node"]) -> List[Finding]:
+    if not any(role_of(n) == "stop" for n in nodes.values()):
+        return [Finding("R02", "error", "Es gibt keinen Stop-Block – jeder Ablauf muss enden.", [], [])]
+    return []
+
+
+def check_r03_multiple_stops(nodes: Dict[int, "Node"]) -> List[Finding]:
+    stops = [n for n in nodes.values() if role_of(n) == "stop"]
+    if len(stops) > 1:
+        return [Finding(
+            "R03", "warning",
+            f"Es gibt {len(stops)} Stop-Blöcke – meist ist genau ein Stop-Block übersichtlicher.",
+            [n.id for n in stops], [],
+        )]
+    return []
+
+
+def check_r04_reachable_from_start(nodes: Dict[int, "Node"], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
+    starts = [n for n in nodes.values() if role_of(n) == "start"]
+    if len(starts) != 1:
+        return []
+    reachable: Set[int] = set()
+    stack = [starts[0].id]
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        for arrow in outgoing.get(current, []):
+            stack.append(arrow.target_id)
+    return [
+        Finding("R04", "error", f"Der Block »{_display_label(n)}« ist vom Start aus nicht erreichbar.", [n.id], [])
+        for n in nodes.values() if n.id not in reachable
+    ]
+
+
+def check_r05_reach_stop(nodes: Dict[int, "Node"], incoming: Dict[int, List["Arrow"]]) -> List[Finding]:
+    stops = [n for n in nodes.values() if role_of(n) == "stop"]
+    if not stops:
+        return []
+    can_reach_stop: Set[int] = set()
+    stack = [s.id for s in stops]
+    while stack:
+        current = stack.pop()
+        if current in can_reach_stop:
+            continue
+        can_reach_stop.add(current)
+        for arrow in incoming.get(current, []):
+            stack.append(arrow.source_id)
+    return [
+        Finding("R05", "error", f"Vom Block »{_display_label(n)}« aus wird kein Stop-Block mehr erreicht (Sackgasse).", [n.id], [])
+        for n in nodes.values() if n.id not in can_reach_stop
+    ]
+
+
+def check_r06_connected(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -> List[Finding]:
+    if not nodes:
+        return []
+    adjacency: Dict[int, Set[int]] = {}
+    for arrow in arrows.values():
+        if arrow.source_id in nodes and arrow.target_id in nodes:
+            adjacency.setdefault(arrow.source_id, set()).add(arrow.target_id)
+            adjacency.setdefault(arrow.target_id, set()).add(arrow.source_id)
+    seen: Set[int] = set()
+    stack = [next(iter(nodes))]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(adjacency.get(current, ()))
+    missing = [n for n in nodes.values() if n.id not in seen]
+    return [
+        Finding("R06", "error", f"Der Block »{_display_label(n)}« gehört zu einem vom restlichen Ablaufplan getrennten Teil.", [n.id], [])
+        for n in missing
+    ]
+
+
+# ---- B. Verbindungen und Knotengrade --------------------------------------
+
+def check_r08_dangling_edges(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -> List[Finding]:
+    findings = []
+    for arrow in arrows.values():
+        if arrow.source_id not in nodes or arrow.target_id not in nodes:
+            findings.append(Finding(
+                "R08", "error",
+                "Ein Pfeil verweist auf einen nicht (mehr) vorhandenen Block – die Datei scheint beschädigt zu sein.",
+                [], [arrow.id],
+            ))
+    return findings
+
+
+def check_node_degrees(nodes: Dict[int, "Node"], incoming: Dict[int, List["Arrow"]], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
+    """R10: Ein- und Ausgangsgrad muss zum Blocktyp passen."""
+    findings = []
+    for node in nodes.values():
+        role = role_of(node)
+        label = _display_label(node) or role
+        in_count = len(incoming.get(node.id, []))
+        out_count = len(outgoing.get(node.id, []))
+        if role == "start":
+            if in_count > 0:
+                findings.append(Finding("R10", "error", f"Der Start-Block »{label}« darf keinen eingehenden Pfeil haben.", [node.id], []))
+            if out_count == 0:
+                findings.append(Finding("R10", "error", f"Der Start-Block »{label}« hat keinen ausgehenden Pfeil.", [node.id], []))
+            elif out_count > 1:
+                findings.append(Finding("R10", "error", f"Der Start-Block »{label}« hat {out_count} ausgehende Pfeile – erlaubt ist genau einer.", [node.id], []))
+        elif role == "stop":
+            if in_count == 0:
+                findings.append(Finding("R10", "error", f"Der Stop-Block »{label}« hat keinen eingehenden Pfeil.", [node.id], []))
+            if out_count > 0:
+                findings.append(Finding("R10", "error", f"Der Stop-Block »{label}« darf keinen ausgehenden Pfeil haben.", [node.id], []))
+        elif role == "decision":
+            if in_count == 0:
+                findings.append(Finding("R10", "error", f"Die Verzweigung »{label}« hat keinen eingehenden Pfeil.", [node.id], []))
+            if out_count != 2:
+                findings.append(Finding(
+                    "R10", "error",
+                    f"Die Verzweigung »{label}« hat {out_count} ausgehende Pfeile. Eine Verzweigung braucht genau zwei: Ja und Nein.",
+                    [node.id], [],
+                ))
+        elif role == "branchEnd":
+            if in_count != 2:
+                findings.append(Finding(
+                    "R10", "error",
+                    f"Der Verzweigung-zu-Block »{label}« hat {in_count} eingehende Pfeile statt der geforderten zwei (je einer pro Zweig).",
+                    [node.id], [],
+                ))
+            if out_count != 1:
+                findings.append(Finding("R10", "error", f"Der Verzweigung-zu-Block »{label}« hat {out_count} ausgehende Pfeile statt genau einem.", [node.id], []))
+        else:
+            kind = ROLE_NAMES_DE.get(role, role)
+            if in_count == 0:
+                findings.append(Finding("R10", "error", f"Der {kind}-Block »{label}« ist nicht erreichbar (kein eingehender Pfeil).", [node.id], []))
+            if out_count == 0:
+                findings.append(Finding("R10", "error", f"Der {kind}-Block »{label}« hat keinen ausgehenden Pfeil.", [node.id], []))
+            elif out_count > 1:
+                findings.append(Finding("R10", "error", f"Der {kind}-Block »{label}« hat {out_count} ausgehende Pfeile, ist aber kein Verzweigungsblock.", [node.id], []))
+    return findings
+
+
+def check_r11_self_loop(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -> List[Finding]:
+    findings = []
+    for arrow in arrows.values():
+        if arrow.source_id == arrow.target_id and arrow.source_id in nodes:
+            node = nodes[arrow.source_id]
+            findings.append(Finding("R11", "error", f"Der Block »{_display_label(node)}« ist über einen Pfeil mit sich selbst verbunden.", [node.id], [arrow.id]))
+    return findings
+
+
+def check_r12_duplicate_edges(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -> List[Finding]:
+    findings = []
+    seen: Dict[Tuple[int, str, int, str], int] = {}
+    for arrow in arrows.values():
+        key = (arrow.source_id, arrow.source_port, arrow.target_id, arrow.target_port)
+        if key in seen:
+            source = nodes.get(arrow.source_id)
+            target = nodes.get(arrow.target_id)
+            findings.append(Finding(
+                "R12", "warning",
+                f"Zwischen »{_display_label(source) if source else '?'}« und »{_display_label(target) if target else '?'}« gibt es doppelte Pfeile.",
+                [i for i in (arrow.source_id, arrow.target_id) if i in nodes], [seen[key], arrow.id],
+            ))
+        else:
+            seen[key] = arrow.id
+    return findings
+
+
+# ---- C. Geometrie und Zeichenkonventionen ---------------------------------
+
+def check_geometry_ports(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -> List[Finding]:
+    """R14, R15, R17: Pfeile verlassen unten (Verzweigung zusätzlich rechts) und enden oben (bzw. rechts)."""
+    findings = []
+    for arrow in arrows.values():
+        source = nodes.get(arrow.source_id)
+        target = nodes.get(arrow.target_id)
+        if not source or not target:
+            continue
+        is_branch_edge = role_of(source) == "decision" and arrow.source_port == "right"
+        if arrow.source_port == "top" or arrow.target_port == "bottom":
+            findings.append(Finding(
+                "R14", "error",
+                f"Der Pfeil von »{_display_label(source)}« nach »{_display_label(target)}« beginnt oder endet an der falschen Seite – "
+                f"Pfeile müssen unten beginnen und oben am nächsten Block enden.",
+                [source.id, target.id], [arrow.id],
+            ))
+            continue
+        if arrow.source_port == "right" and not is_branch_edge:
+            findings.append(Finding(
+                "R14", "error",
+                f"Der Pfeil von »{_display_label(source)}« verlässt den Block seitlich, obwohl es kein Verzweigungsblock ist – Pfeile müssen unten beginnen.",
+                [source.id], [arrow.id],
+            ))
+        if is_branch_edge and arrow.target_port not in ("right", "top"):
+            findings.append(Finding(
+                "R15", "error",
+                f"Der seitliche Zweig der Verzweigung »{_display_label(source)}« muss rechts oder oben in den nächsten Block münden.",
+                [source.id, target.id], [arrow.id],
+            ))
+        if arrow.source_port != "right" and target.y < source.y:
+            findings.append(Finding(
+                "R17", "warning",
+                f"Der Pfeil von »{_display_label(source)}« nach »{_display_label(target)}« führt nach oben statt nach unten.",
+                [source.id, target.id], [arrow.id],
+            ))
+    for node in nodes.values():
+        if role_of(node) != "decision":
+            continue
+        ports_used = [a.source_port for a in arrows.values() if a.source_id == node.id]
+        if len(ports_used) == 2 and ports_used[0] == ports_used[1]:
+            findings.append(Finding(
+                "R15", "error",
+                f"Beide Zweige der Verzweigung »{_display_label(node)}« verlassen den Block an derselben Seite – Ja und Nein sollten unten und rechts herausgeführt werden.",
+                [node.id], [],
+            ))
+    return findings
+
+
+def check_r19_overlaps(nodes: Dict[int, "Node"]) -> List[Finding]:
+    findings = []
+    items = list(nodes.values())
+    if len(items) > 500:
+        return findings
+    for i in range(len(items)):
+        ax1, ay1, ax2, ay2 = items[i].bbox()
+        for j in range(i + 1, len(items)):
+            bx1, by1, bx2, by2 = items[j].bbox()
+            if ax1 < bx2 and ax2 > bx1 and ay1 < by2 and ay2 > by1:
+                findings.append(Finding(
+                    "R19", "warning",
+                    f"Die Blöcke »{_display_label(items[i])}« und »{_display_label(items[j])}« überlappen sich.",
+                    [items[i].id, items[j].id], [],
+                ))
+    return findings
+
+
+def _segments_intersect(p1: Tuple[float, float], p2: Tuple[float, float], p3: Tuple[float, float], p4: Tuple[float, float]) -> bool:
+    def ccw(a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, float]) -> bool:
+        return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+    return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
+
+
+def _arrow_polyline(nodes: Dict[int, "Node"], arrow: "Arrow") -> Optional[List[Tuple[float, float]]]:
+    source = nodes.get(arrow.source_id)
+    target = nodes.get(arrow.target_id)
+    if not source or not target:
+        return None
+    return [source.ports()[arrow.source_port]] + list(arrow.waypoints) + [target.ports()[arrow.target_port]]
+
+
+def check_r18_crossings(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -> List[Finding]:
+    """R18: sich kreuzende Pfeile (O(n²), daher bei sehr großen Plänen übersprungen)."""
+    if len(nodes) > 500:
+        return []
+    findings = []
+    polylines = {aid: _arrow_polyline(nodes, a) for aid, a in arrows.items()}
+    ids = list(arrows.keys())
+    for i in range(len(ids)):
+        a1 = arrows[ids[i]]
+        p1 = polylines[ids[i]]
+        if not p1:
+            continue
+        for j in range(i + 1, len(ids)):
+            a2 = arrows[ids[j]]
+            if {a1.source_id, a1.target_id} & {a2.source_id, a2.target_id}:
+                continue  # gemeinsamer Block ist kein "Kreuzen"
+            p2 = polylines[ids[j]]
+            if not p2:
+                continue
+            crossed = False
+            for k in range(len(p1) - 1):
+                for l in range(len(p2) - 1):
+                    if _segments_intersect(p1[k], p1[k + 1], p2[l], p2[l + 1]):
+                        crossed = True
+                        break
+                if crossed:
+                    break
+            if crossed:
+                findings.append(Finding("R18", "warning", "Zwei Pfeile kreuzen sich – das lässt sich meist durch Umsortieren der Blöcke vermeiden.", [], [a1.id, a2.id]))
+    return findings
+
+
+# ---- D. Kontrollstrukturen -------------------------------------------------
+
+def check_r25_empty_bodies(nodes: Dict[int, "Node"], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        role = role_of(node)
+        if role == "decision":
+            for arrow in outgoing.get(node.id, []):
+                target = nodes.get(arrow.target_id)
+                if target and role_of(target) == "branchEnd":
+                    findings.append(Finding(
+                        "R25", "warning",
+                        f"Ein Zweig der Verzweigung »{_display_label(node)}« ist leer (der Pfeil geht direkt zum Verzweigung-zu-Block).",
+                        [node.id, target.id], [arrow.id],
+                    ))
+        elif role == "loopStart":
+            for arrow in outgoing.get(node.id, []):
+                target = nodes.get(arrow.target_id)
+                if target and role_of(target) == "loopEnd":
+                    findings.append(Finding(
+                        "R25", "warning",
+                        f"Der Rumpf der Schleife »{_display_label(node)}« ist leer (der Pfeil geht direkt zum Schleife-zu-Block).",
+                        [node.id, target.id], [arrow.id],
+                    ))
+    return findings
+
+
+def analyze_control_structure_nesting(
+    nodes: Dict[int, "Node"], outgoing: Dict[int, List["Arrow"]],
+) -> Tuple[List[Finding], Dict[int, Set[int]]]:
+    """R20, R22, R23: Verzweigung/Schleife müssen passend und geschachtelt geschlossen werden.
+
+    Realisiert als einziger, gedächtnisbasierter Pfad-Durchlauf mit einem Stack aus
+    ("DEC", id)/("LOOP", id)-Markierungen: Öffnende Blöcke legen eine Markierung ab,
+    schließende Blöcke müssen die oberste Markierung des passenden Typs entfernen.
+    Ein nicht passender Zustand (z. B. "Schleife zu" während eine Verzweigung offen
+    ist) verletzt die Verschachtelung (R22); ein am Pfadende nicht abgebauter Stack
+    verletzt R20; wenn die beiden Zweige einer Verzweigung an unterschiedlichen
+    Verzweigung-zu-Blöcken schließen, verletzt das R23.
+    """
+    findings: List[Finding] = []
+    starts = [n for n in nodes.values() if role_of(n) == "start"]
+    if not starts:
+        return findings, {}
+
+    decision_merges: Dict[int, Set[int]] = {}
+    loop_body_nodes: Dict[int, Set[int]] = {}
+    reported: Set[Tuple[str, int]] = set()
+    seen_states: Set[Tuple[int, Tuple[Tuple[str, int], ...]]] = set()
+    MAX_STATES = 50000
+
+    def walk(node_id: int, stack: Tuple[Tuple[str, int], ...]) -> None:
+        if len(seen_states) > MAX_STATES:
+            return
+        key = (node_id, stack)
+        if key in seen_states:
+            return
+        seen_states.add(key)
+        node = nodes.get(node_id)
+        if node is None:
+            return
+        for kind, marker_id in stack:
+            if kind == "LOOP":
+                loop_body_nodes.setdefault(marker_id, set()).add(node_id)
+
+        role = role_of(node)
+        new_stack = stack
+        if role == "decision":
+            new_stack = stack + (("DEC", node_id),)
+        elif role == "loopStart":
+            new_stack = stack + (("LOOP", node_id),)
+        elif role == "branchEnd":
+            if stack and stack[-1][0] == "DEC":
+                dec_id = stack[-1][1]
+                decision_merges.setdefault(dec_id, set()).add(node_id)
+                new_stack = stack[:-1]
+            elif ("branchEnd", node_id) not in reported:
+                reported.add(("branchEnd", node_id))
+                findings.append(Finding(
+                    "R22", "error",
+                    f"Der Verzweigung-zu-Block »{_display_label(node) or node.id}« schließt keine offene Verzweigung an dieser Stelle – "
+                    f"Verzweigung und Schleife müssen sauber ineinander verschachtelt sein.",
+                    [node_id], [],
+                ))
+        elif role == "loopEnd":
+            if stack and stack[-1][0] == "LOOP":
+                new_stack = stack[:-1]
+            elif ("loopEnd", node_id) not in reported:
+                reported.add(("loopEnd", node_id))
+                findings.append(Finding(
+                    "R22", "error",
+                    f"Der Schleife-zu-Block »{_display_label(node) or node.id}« schließt keine offene Schleife an dieser Stelle – "
+                    f"Verzweigung und Schleife müssen sauber ineinander verschachtelt sein.",
+                    [node_id], [],
+                ))
+
+        outs = outgoing.get(node_id, [])
+        if not outs and role == "stop" and new_stack:
+            for kind, marker_id in new_stack:
+                if (kind, marker_id) in reported:
+                    continue
+                reported.add((kind, marker_id))
+                marker_node = nodes.get(marker_id)
+                marker_label = marker_node.label if marker_node else "?"
+                if kind == "DEC":
+                    findings.append(Finding("R20", "error", f"Die Verzweigung »{marker_label}« wird auf diesem Pfad nie durch einen Verzweigung-zu-Block geschlossen.", [marker_id], []))
+                else:
+                    findings.append(Finding("R20", "error", f"Die Schleife »{marker_label}« wird auf diesem Pfad nie durch einen Schleife-zu-Block geschlossen.", [marker_id], []))
+        for arrow in outs:
+            walk(arrow.target_id, new_stack)
+
+    walk(starts[0].id, tuple())
+
+    for dec_id, merges in decision_merges.items():
+        if len(merges) > 1:
+            dec = nodes.get(dec_id)
+            findings.append(Finding(
+                "R23", "error",
+                f"Die beiden Zweige der Verzweigung »{dec.label if dec else dec_id}« münden an unterschiedlichen "
+                f"Verzweigung-zu-Blöcken – beide Zweige müssen im selben Block zusammengeführt werden.",
+                [dec_id, *merges], [],
+            ))
+
+    return findings, loop_body_nodes
+
+
+def check_r26_loop_condition(nodes: Dict[int, "Node"], loop_body_nodes: Dict[int, Set[int]]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        if role_of(node) != "loopStart":
+            continue
+        body = loop_body_nodes.get(node.id, set()) - {node.id}
+        condition_vars = extract_identifiers(_display_label(node))
+        if not condition_vars:
+            continue
+        modified: Set[str] = set()
+        for body_id in body:
+            body_node = nodes.get(body_id)
+            if body_node and role_of(body_node) == "process":
+                assignment = split_assignment(body_node.label)
+                if assignment:
+                    modified |= extract_identifiers(assignment[0])
+        if not (condition_vars & modified):
+            findings.append(Finding(
+                "R26", "warning",
+                f"Die Bedingung der Schleife »{_display_label(node)}« verwendet nur Variablen, die im Schleifenrumpf nie verändert werden – möglicherweise eine Endlosschleife.",
+                [node.id], [],
+            ))
+    return findings
+
+
+# ---- E. Kantenbeschriftungen ----------------------------------------------
+
+def check_r27_r28_branch_labels(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        if role_of(node) != "decision":
+            continue
+        outs = outgoing.get(node.id, [])
+        if len(outs) != 2:
+            continue  # bereits durch R10 gemeldet
+        labelled = [(a, (a.label or "").strip().lower()) for a in outs]
+        kinds = ["yes" if lbl in YES_WORDS else "no" if lbl in NO_WORDS else None for _, lbl in labelled]
+        if None in kinds:
+            findings.append(Finding(
+                "R27", "error",
+                f"Beide Pfeile der Verzweigung »{_display_label(node)}« müssen mit »Ja« bzw. »Nein« beschriftet sein.",
+                [node.id], [a.id for a, _ in labelled],
+            ))
+        elif kinds[0] == kinds[1]:
+            findings.append(Finding(
+                "R27", "error",
+                f"Die beiden Pfeile der Verzweigung »{_display_label(node)}« sind beide mit »{labelled[0][1]}« beschriftet – sie müssen sich unterscheiden (Ja/Nein).",
+                [node.id], [a.id for a, _ in labelled],
+            ))
+    for arrow in arrows.values():
+        source = nodes.get(arrow.source_id)
+        if source and role_of(source) == "decision":
+            continue
+        label = (arrow.label or "").strip().lower()
+        if label in YES_WORDS or label in NO_WORDS:
+            findings.append(Finding(
+                "R28", "error",
+                f"Der Pfeil von »{_display_label(source) if source else '?'}« trägt die Beschriftung »{arrow.label}«, stammt aber nicht von einer Verzweigung.",
+                [source.id] if source else [], [arrow.id],
+            ))
+    return findings
+
+
+# ---- F. Blockinhalte und Semantik -----------------------------------------
+
+def check_r29_labels(nodes: Dict[int, "Node"]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        role = role_of(node)
+        if shape_of(node) in UNLABELED_SHAPES:
+            continue  # Verzweigung-zu / Schleife-zu tragen bewusst keinen Text
+        label = (_display_label(node) or "").strip()
+        if not label:
+            findings.append(Finding("R29", "error", "Ein Block ohne Beschriftung wurde gefunden.", [node.id], []))
+            continue
+        if role == "start" and label.lower() != "start":
+            findings.append(Finding("R29", "error", "Der Start-Block muss den Text »Start« tragen.", [node.id], []))
+        if role == "stop" and label.lower() != "stop":
+            findings.append(Finding("R29", "error", "Der Stop-Block muss den Text »Stop« tragen.", [node.id], []))
+    return findings
+
+
+def check_r30_decision_content(nodes: Dict[int, "Node"]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        if role_of(node) != "decision":
+            continue
+        label = _display_label(node) or ""
+        assignment = split_assignment(label)
+        has_comparison = any(op in label for op in COMPARISON_OPS)
+        has_bool_word = any(w in label.lower() for w in BOOL_WORDS)
+        if assignment:
+            findings.append(Finding("R30", "error", f"Die Verzweigung »{label}« enthält eine Zuweisung – eine Verzweigung darf nur eine Ja/Nein-Bedingung enthalten.", [node.id], []))
+        elif not has_comparison and not has_bool_word:
+            findings.append(Finding("R30", "error", f"Die Verzweigung »{label}« enthält keine erkennbare Ja/Nein-Bedingung (z. B. mit ==, <, >, und, oder).", [node.id], []))
+    return findings
+
+
+def check_r31_process_content(nodes: Dict[int, "Node"]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        if role_of(node) != "process":
+            continue
+        label = _display_label(node) or ""
+        assignment = split_assignment(label)
+        has_comparison = any(op in label for op in COMPARISON_OPS)
+        if has_comparison and not assignment:
+            findings.append(Finding(
+                "R31", "error",
+                f"Die Anweisung »{label}« enthält einen Vergleich, aber keine Zuweisung – gehört das nicht in einen Verzweigungsblock?",
+                [node.id], [],
+            ))
+    return findings
+
+
+def check_r33_atomicity(nodes: Dict[int, "Node"]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        if shape_of(node) in UNLABELED_SHAPES:
+            continue
+        label = _display_label(node) or ""
+        if ";" in label:
+            findings.append(Finding(
+                "R33", "warning",
+                f"Der Block »{label}« enthält mehrere durch »;« getrennte Anweisungen – pro Block sollte nur eine Anweisung stehen.",
+                [node.id], [],
+            ))
+    return findings
+
+
+def _topological_order(nodes: Dict[int, "Node"], outgoing: Dict[int, List["Arrow"]], start_id: int) -> Optional[List[int]]:
+    """Kahn's algorithm restricted to the nodes reachable from start_id. Returns None on a cycle."""
+    reachable: Set[int] = set()
+    stack = [start_id]
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        for arrow in outgoing.get(current, []):
+            stack.append(arrow.target_id)
+    in_degree = {nid: 0 for nid in reachable}
+    for nid in reachable:
+        for arrow in outgoing.get(nid, []):
+            if arrow.target_id in in_degree:
+                in_degree[arrow.target_id] += 1
+    queue = [nid for nid, deg in in_degree.items() if deg == 0]
+    order: List[int] = []
+    while queue:
+        current = queue.pop()
+        order.append(current)
+        for arrow in outgoing.get(current, []):
+            if arrow.target_id in in_degree:
+                in_degree[arrow.target_id] -= 1
+                if in_degree[arrow.target_id] == 0:
+                    queue.append(arrow.target_id)
+    if len(order) != len(reachable):
+        return None
+    return order
+
+
+def check_r34_dataflow(nodes: Dict[int, "Node"], incoming: Dict[int, List["Arrow"]], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
+    """R34: Variablen müssen auf jedem Pfad vor dem Lesen zugewiesen worden sein."""
+    if len(nodes) > 500:
+        return []
+    starts = [n for n in nodes.values() if role_of(n) == "start"]
+    if len(starts) != 1:
+        return []
+    order = _topological_order(nodes, outgoing, starts[0].id)
+    if order is None:
+        return [Finding("R34", "warning", "Der Kontrollfluss enthält einen Kreis – die Datenfluss-Analyse (R34) ist für diesen Plan nicht durchführbar.", [], [])]
+
+    findings: List[Finding] = []
+    assigned_out: Dict[int, FrozenSet[str]] = {}
+    for node_id in order:
+        node = nodes[node_id]
+        preds = incoming.get(node_id, [])
+        pred_sets = [assigned_out[a.source_id] for a in preds if a.source_id in assigned_out]
+        assigned_in: FrozenSet[str] = frozenset(set.intersection(*[set(s) for s in pred_sets])) if pred_sets else frozenset()
+
+        role = role_of(node)
+        label = _display_label(node) or ""
+        assigned_here: Set[str] = set()
+        if role == "decision":
+            reads = extract_identifiers(label)
+        elif role == "process":
+            assignment = split_assignment(label)
+            if assignment:
+                lhs, rhs = assignment
+                reads = extract_identifiers(rhs)
+                assigned_here = extract_identifiers(lhs)
+            else:
+                reads = extract_identifiers(label)
+        else:
+            reads = set()
+
+        for var in sorted(reads - set(assigned_in)):
+            findings.append(Finding(
+                "R34", "warning",
+                f"Die Variable »{var}« wird in »{label}« gelesen, bevor sie auf jedem Pfad einen Wert erhalten hat.",
+                [node_id], [],
+            ))
+        assigned_out[node_id] = frozenset(set(assigned_in) | assigned_here)
+    return findings
+
+
+def check_r35_output_present(nodes: Dict[int, "Node"], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
+    starts = [n for n in nodes.values() if role_of(n) == "start"]
+    if not starts:
+        return []
+    visited: Set[int] = set()
+    stops_without_output: Set[int] = set()
+    stack = [starts[0].id]
+    while stack:
+        current = stack.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        node = nodes.get(current)
+        if node is None:
+            continue
+        if role_of(node) == "stop":
+            stops_without_output.add(current)
+            continue
+        if is_output_block(node):
+            continue  # Pfad hat eine Ausgabe – nicht weiter verfolgen
+        for arrow in outgoing.get(current, []):
+            stack.append(arrow.target_id)
+    return [
+        Finding(
+            "R35", "warning",
+            f"Auf mindestens einem Pfad zum Stop-Block »{_display_label(nodes[stop_id])}« erfolgt keine Ausgabe – Ergebnisse sollten sichtbar gemacht werden.",
+            [stop_id], [],
+        )
+        for stop_id in stops_without_output
+    ]
+
+
+def check_r36_subprocess(nodes: Dict[int, "Node"]) -> List[Finding]:
+    findings = []
+    for node in nodes.values():
+        if role_of(node) != "subprocess":
+            continue
+        if not (_display_label(node) or "").strip() or not node.subdiagram:
+            continue  # fehlende Beschriftung meldet bereits R29; leeres/unbenutztes subdiagram ist ok
+        try:
+            payload = json.loads(node.subdiagram)
+            sub_nodes = {item["id"]: Node(**item) for item in payload.get("nodes", [])}
+            sub_arrows = {item["id"]: Arrow(**item) for item in payload.get("arrows", [])}
+        except (ValueError, TypeError, KeyError):
+            findings.append(Finding("R36", "error", f"Die Funktion »{_display_label(node)}« enthält einen beschädigten Unterablaufplan.", [node.id], []))
+            continue
+        if sum(1 for n in sub_nodes.values() if role_of(n) == "start") != 1:
+            findings.append(Finding("R36", "error", f"Die Funktion »{_display_label(node)}« hat keinen eindeutigen Start-Block im Unterablaufplan.", [node.id], []))
+        for nested in evaluate_chart(sub_nodes, sub_arrows):
+            findings.append(Finding(nested.rule, nested.severity, f"In Funktion »{_display_label(node)}«: {nested.message}", [node.id], []))
+    return findings
+
+
+# ---- Zusammenführung -------------------------------------------------------
+
+def evaluate_chart(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"], disabled_rules: Optional[Set[str]] = None) -> List[Finding]:
+    """Run the full rule catalogue against a chart and return all findings.
+
+    Pure function: does not modify `nodes`/`arrows`, has no side effects, and
+    never raises on malformed input.
+    """
+    disabled_rules = disabled_rules or set()
+    outgoing, incoming = _build_edge_maps(nodes, arrows)
+
+    findings: List[Finding] = []
+    findings += check_r01_start(nodes)
+    findings += check_r02_stop_exists(nodes)
+    findings += check_r03_multiple_stops(nodes)
+    findings += check_r04_reachable_from_start(nodes, outgoing)
+    findings += check_r05_reach_stop(nodes, incoming)
+    findings += check_r06_connected(nodes, arrows)
+    findings += check_r08_dangling_edges(nodes, arrows)
+    findings += check_node_degrees(nodes, incoming, outgoing)
+    findings += check_r11_self_loop(nodes, arrows)
+    findings += check_r12_duplicate_edges(nodes, arrows)
+    findings += check_geometry_ports(nodes, arrows)
+    findings += check_r19_overlaps(nodes)
+    findings += check_r18_crossings(nodes, arrows)
+    findings += check_r25_empty_bodies(nodes, outgoing)
+    nesting_findings, loop_body_nodes = analyze_control_structure_nesting(nodes, outgoing)
+    findings += nesting_findings
+    findings += check_r26_loop_condition(nodes, loop_body_nodes)
+    findings += check_r27_r28_branch_labels(nodes, arrows, outgoing)
+    findings += check_r29_labels(nodes)
+    findings += check_r30_decision_content(nodes)
+    findings += check_r31_process_content(nodes)
+    findings += check_r33_atomicity(nodes)
+    findings += check_r34_dataflow(nodes, incoming, outgoing)
+    findings += check_r35_output_present(nodes, outgoing)
+    findings += check_r36_subprocess(nodes)
+
+    if disabled_rules:
+        findings = [f for f in findings if f.rule not in disabled_rules]
+    findings.sort(key=lambda f: (0 if f.severity == "error" else 1, f.rule))
+    return findings
+
+
+# Metadata for a future rule-settings UI: id -> (severity, short German title).
+RULES: Dict[str, Tuple[str, str]] = {
+    "R01": ("error", "Genau ein Start-Block"),
+    "R02": ("error", "Mindestens ein Stop-Block"),
+    "R03": ("warning", "Mehrere Stop-Blöcke"),
+    "R04": ("error", "Erreichbarkeit vom Start"),
+    "R05": ("error", "Jeder Block erreicht ein Stop"),
+    "R06": ("error", "Ablaufplan zusammenhängend"),
+    "R08": ("error", "Keine hängenden Pfeile"),
+    "R10": ("error", "Ein-/Ausgangsgrad passt zum Blocktyp"),
+    "R11": ("error", "Kein Selbstbezug"),
+    "R12": ("warning", "Keine doppelten Pfeile"),
+    "R14": ("error", "Pfeile unten raus, oben rein"),
+    "R15": ("error", "Verzweigungszweige sauber getrennt"),
+    "R17": ("warning", "Fluss von oben nach unten"),
+    "R18": ("warning", "Keine Pfeilkreuzungen"),
+    "R19": ("warning", "Keine überlappenden Blöcke"),
+    "R20": ("error", "Kontrollstrukturen werden geschlossen"),
+    "R22": ("error", "Saubere Verschachtelung"),
+    "R23": ("error", "Beide Zweige treffen sich im selben Block"),
+    "R25": ("warning", "Kein leerer Zweig/Rumpf"),
+    "R26": ("warning", "Schleifenbedingung wird verändert"),
+    "R27": ("error", "Ja/Nein-Beschriftung an Verzweigungen"),
+    "R28": ("error", "Ja/Nein nur an Verzweigungen"),
+    "R29": ("error", "Jeder Block ist beschriftet"),
+    "R30": ("error", "Verzweigung enthält eine Bedingung"),
+    "R31": ("error", "Anweisung enthält keinen Vergleich"),
+    "R33": ("warning", "Eine Anweisung pro Block"),
+    "R34": ("warning", "Variablen vor Gebrauch zugewiesen"),
+    "R35": ("warning", "Ausgabe auf jedem Pfad"),
+    "R36": ("error", "Funktion referenziert gültigen Unterablaufplan"),
+}
 
 
 class PapEditor(tk.Tk):
@@ -1334,126 +2206,33 @@ class PapEditor(tk.Tk):
         return "break"
 
     def check_diagram(self) -> None:
-        issues: List[str] = []
-        info: List[str] = []
-        starts = [n for n in self.nodes.values() if n.template_label == "Start"]
-        stops = [n for n in self.nodes.values() if n.template_label == "Stop"]
-        if len(starts) != 1:
-            issues.append(f"Es muss genau einen Start-Block geben (gefunden: {len(starts)}).")
-        if not stops:
-            issues.append("Es muss mindestens einen Stop-Block geben.")
+        findings = evaluate_chart(self.nodes, self.arrows)
 
-        outgoing: Dict[int, List[Arrow]] = {}
-        incoming: Dict[int, List[Arrow]] = {}
-        for arrow in self.arrows.values():
-            outgoing.setdefault(arrow.source_id, []).append(arrow)
-            incoming.setdefault(arrow.target_id, []).append(arrow)
+        # betroffene Blöcke/Pfeile zur Orientierung markieren
+        self.selected_node_ids = {nid for f in findings for nid in f.node_ids if nid in self.nodes}
+        arrow_hits = [aid for f in findings for aid in f.arrow_ids if aid in self.arrows]
+        self.selected_arrow_id = arrow_hits[0] if arrow_hits else None
+        self._redraw()
 
-        decision_count = 0
-        for node in self.nodes.values():
-            out_count = len(outgoing.get(node.id, []))
-            in_count = len(incoming.get(node.id, []))
-            is_connector = node.template_label == "Verzweigung zu"
-            if node.template_label == "Start":
-                if out_count == 0:
-                    issues.append(f"Start-Block '{node.label}' hat keine ausgehende Verbindung.")
-                if out_count > 1:
-                    issues.append(f"Start-Block '{node.label}' hat mehrere ausgehende Verbindungen ({out_count}) – doppelter Weg ohne Verzweigung.")
-                if in_count > 0:
-                    issues.append(f"Start-Block '{node.label}' darf keine eingehende Verbindung haben.")
-            elif node.template_label == "Stop":
-                if in_count == 0:
-                    issues.append(f"Stop-Block '{node.label}' hat keine eingehende Verbindung.")
-                if out_count > 0:
-                    issues.append(f"Stop-Block '{node.label}' darf keine ausgehende Verbindung haben.")
-            elif node.template_label == "Entscheidung":
-                decision_count += 1
-                if out_count < 2:
-                    issues.append(f"Verzweigung '{node.label}' benötigt mindestens zwei Ausgänge (gefunden: {out_count}).")
-                if in_count == 0:
-                    issues.append(f"Verzweigung '{node.label}' hat keine eingehende Verbindung.")
-                if in_count > 1:
-                    issues.append(f"Verzweigung '{node.label}' hat mehrere eingehende Verbindungen ({in_count}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.")
-            else:
-                if in_count == 0:
-                    issues.append(f"Block '{node.label}' ({node.template_label}) ist nicht erreichbar (keine eingehende Verbindung).")
-                if out_count == 0:
-                    issues.append(f"Block '{node.label}' ({node.template_label}) hat keinen Ausgang.")
-                if out_count > 1:
-                    issues.append(f"Block '{node.label}' hat mehrere ausgehende Verbindungen ({out_count}), ist aber kein Entscheidungs-Symbol – doppelter Weg ohne Verzweigung.")
-                if not is_connector and in_count > 1:
-                    issues.append(f"Block '{node.label}' hat mehrere eingehende Verbindungen ({in_count}) ohne 'Verzweigung zu'-Symbol – nicht zulässiges Zusammenführen paralleler Wege.")
+        if not findings:
+            messagebox.showinfo("Plausibilitätsprüfung", "Keine Probleme gefunden. Der Algorithmus scheint plausibel.")
+            return
 
-        info.append(
-            f"Gefundene Verzweigungen (Entscheidungs-Blöcke): {decision_count}."
-            if decision_count else
-            "Keine Verzweigung (Entscheidungs-Block) im PAP gefunden."
-        )
+        errors = [f for f in findings if f.severity == "error"]
+        warnings = [f for f in findings if f.severity == "warning"]
 
-        if starts:
-            reachable = set()
-            stack = [starts[0].id]
-            while stack:
-                current = stack.pop()
-                if current in reachable:
-                    continue
-                reachable.add(current)
-                for arrow in outgoing.get(current, []):
-                    stack.append(arrow.target_id)
-            for node in self.nodes.values():
-                if node.id not in reachable:
-                    issues.append(f"Block '{node.label}' ist vom Start aus nicht erreichbar.")
-            for stop in stops:
-                if stop.id not in reachable:
-                    issues.append(f"Stop-Block '{stop.label}' wird nie erreicht.")
+        def fmt(f: Finding) -> str:
+            return f"[{f.rule}] {f.message}"
 
-        # Pfeile dürfen im PAP nie nach oben führen – Wiederholungen werden über
-        # die Schleife/Schleife-zu-Symbole abgebildet, nicht über Rücksprünge.
-        for arrow in self.arrows.values():
-            source = self.nodes.get(arrow.source_id)
-            target = self.nodes.get(arrow.target_id)
-            if source and target and target.y <= source.y - 20:
-                issues.append(f"Pfeil von '{source.label}' nach '{target.label}' führt nach oben – im PAP nicht zulässig, Wiederholungen gehören in ein Schleife/Schleife-zu-Paar.")
-
-        # Schleifen müssen auf jedem Pfad korrekt geschachtelt geschlossen werden
-        # (jede 'Schleife' braucht eine passende 'Schleife zu', bevor der Pfad endet).
-        if starts:
-            seen_states: Set[Tuple[int, Tuple[int, ...]]] = set()
-
-            def walk(node_id: int, stack: List[int]) -> None:
-                key = (node_id, tuple(stack))
-                if key in seen_states:
-                    return
-                seen_states.add(key)
-                node = self.nodes.get(node_id)
-                if node is None:
-                    return
-                next_stack = stack
-                if node.template_label == "Schleife":
-                    next_stack = stack + [node.id]
-                elif node.template_label == "Schleife zu":
-                    if not stack:
-                        issues.append(f"'Schleife zu' bei '{node.label}' hat keine zugehörige offene Schleife.")
-                    else:
-                        next_stack = stack[:-1]
-
-                outs = outgoing.get(node_id, [])
-                if not outs and next_stack:
-                    open_node = self.nodes.get(next_stack[-1])
-                    open_label = open_node.label if open_node else "?"
-                    issues.append(f"Schleife '{open_label}' wird nie geschlossen (Pfad endet bei '{node.label}').")
-                for arrow in outs:
-                    walk(arrow.target_id, next_stack)
-
-            walk(starts[0].id, [])
-
-        unique_issues = list(dict.fromkeys(issues))
-        if unique_issues:
-            body = "Gefundene Probleme:\n\n" + "\n".join(f"- {i}" for i in unique_issues)
-            body += "\n\n" + "\n".join(f"ℹ {i}" for i in info)
+        parts = []
+        if errors:
+            parts.append(f"Fehler ({len(errors)}):\n" + "\n".join(f"- {fmt(f)}" for f in errors))
+        if warnings:
+            parts.append(f"Hinweise ({len(warnings)}):\n" + "\n".join(f"- {fmt(f)}" for f in warnings))
+        body = "\n\n".join(parts)
+        if errors:
             messagebox.showwarning("Plausibilitätsprüfung", body)
         else:
-            body = "Keine Probleme gefunden. Der Algorithmus scheint plausibel.\n\n" + "\n".join(f"ℹ {i}" for i in info)
             messagebox.showinfo("Plausibilitätsprüfung", body)
 
     def export_png(self) -> None:
