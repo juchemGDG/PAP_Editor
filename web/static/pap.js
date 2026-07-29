@@ -746,7 +746,7 @@ function updateCtxUI() {
 // ════════════════════════════════════════════════════════════
 //
 // Entspricht der Logik in pap_editor.py (siehe dort für Details zu den
-// bewusst nicht umgesetzten Regeln R07/R13/R16/R21/R32 und wie man eine
+// bewusst nicht umgesetzten Regeln R07/R13/R16/R21/R32-R35 und wie man eine
 // neue Regel ergänzt).
 
 const ROLE_BY_TEMPLATE = {
@@ -766,7 +766,6 @@ const COMPARISON_OPS = ['==', '!=', '<=', '>=', '<', '>'];
 const BOOL_WORDS = ['und', 'oder', 'nicht', 'and', 'or', 'not', '&&', '||'];
 const YES_WORDS = new Set(['ja', 'yes', 'j', 'y', 'true', 'wahr']);
 const NO_WORDS = new Set(['nein', 'no', 'n', 'false', 'falsch']);
-const OUTPUT_KEYWORDS = ['ausgabe', 'gib aus', 'ausgeben', 'ausgeb', 'schreibe', 'print', 'cout', 'system.out', 'write'];
 const IDENT_RE = /[A-Za-z_]\w*/g;
 const ASSIGN_RE = /:=|<-|(?<![=!<>])=(?!=)/;
 const STRING_LITERAL_RE = /'[^']*'|"[^"]*"/g;
@@ -793,12 +792,6 @@ function extractIdentifiers(text) {
     if (!STOPWORDS.has(m[0].toLowerCase())) out.add(m[0]);
   }
   return out;
-}
-
-function isOutputBlock(n) {
-  if (roleOf(n) !== 'process') return false;
-  const label = (n.label || '').trim().toLowerCase();
-  return OUTPUT_KEYWORDS.some(kw => label.startsWith(kw) || label.includes(kw));
 }
 
 function buildEdgeMaps(nodesObj, arrowsObj) {
@@ -1275,120 +1268,6 @@ function checkR31ProcessContent(nodesObj) {
   return findings;
 }
 
-function checkR33Atomicity(nodesObj) {
-  const findings = [];
-  for (const node of Object.values(nodesObj)) {
-    if (UNLABELED.has(shapeOf(node))) continue;
-    const label = node.label || '';
-    if (label.includes(';')) {
-      findings.push(F('R33', 'warning', `Der Block »${label}« enthält mehrere durch »;« getrennte Anweisungen – pro Block sollte nur eine Anweisung stehen.`, [node.id]));
-    }
-  }
-  return findings;
-}
-
-function topologicalOrder(nodesObj, outgoing, startId) {
-  const reachable = new Set();
-  const stack = [startId];
-  while (stack.length) {
-    const cur = stack.pop();
-    if (reachable.has(cur)) continue;
-    reachable.add(cur);
-    for (const a of (outgoing[cur] || [])) stack.push(a.targetId);
-  }
-  const inDegree = {};
-  for (const id of reachable) inDegree[id] = 0;
-  for (const id of reachable) {
-    for (const a of (outgoing[id] || [])) {
-      if (a.targetId in inDegree) inDegree[a.targetId] += 1;
-    }
-  }
-  const queue = Object.keys(inDegree).filter(id => inDegree[id] === 0).map(Number);
-  const order = [];
-  while (queue.length) {
-    const cur = queue.pop();
-    order.push(cur);
-    for (const a of (outgoing[cur] || [])) {
-      if (a.targetId in inDegree) {
-        inDegree[a.targetId] -= 1;
-        if (inDegree[a.targetId] === 0) queue.push(a.targetId);
-      }
-    }
-  }
-  return order.length === reachable.size ? order : null;
-}
-
-function checkR34Dataflow(nodesObj, incoming, outgoing) {
-  if (Object.keys(nodesObj).length > 500) return [];
-  const starts = Object.values(nodesObj).filter(n => roleOf(n) === 'start');
-  if (starts.length !== 1) return [];
-  const order = topologicalOrder(nodesObj, outgoing, starts[0].id);
-  if (order === null) {
-    return [F('R34', 'warning', 'Der Kontrollfluss enthält einen Kreis – die Datenfluss-Analyse (R34) ist für diesen Plan nicht durchführbar.')];
-  }
-  const findings = [];
-  const assignedOut = {};
-  for (const nodeId of order) {
-    const node = nodesObj[nodeId];
-    const preds = incoming[nodeId] || [];
-    const predSets = preds.filter(a => assignedOut[a.sourceId]).map(a => assignedOut[a.sourceId]);
-    let assignedIn;
-    if (predSets.length) {
-      assignedIn = new Set(predSets[0]);
-      for (const s of predSets.slice(1)) {
-        for (const v of [...assignedIn]) if (!s.has(v)) assignedIn.delete(v);
-      }
-    } else {
-      assignedIn = new Set();
-    }
-
-    const role = roleOf(node);
-    const label = node.label || '';
-    let reads, assignedHere = new Set();
-    if (role === 'decision') {
-      reads = extractIdentifiers(label);
-    } else if (role === 'process') {
-      const assignment = splitAssignment(label);
-      if (assignment) {
-        reads = extractIdentifiers(assignment[1]);
-        assignedHere = extractIdentifiers(assignment[0]);
-      } else {
-        reads = extractIdentifiers(label);
-      }
-    } else {
-      reads = new Set();
-    }
-
-    for (const v of [...reads].filter(v => !assignedIn.has(v)).sort()) {
-      findings.push(F('R34', 'warning', `Die Variable »${v}« wird in »${label}« gelesen, bevor sie auf jedem Pfad einen Wert erhalten hat.`, [nodeId]));
-    }
-    const combined = new Set(assignedIn);
-    for (const v of assignedHere) combined.add(v);
-    assignedOut[nodeId] = combined;
-  }
-  return findings;
-}
-
-function checkR35OutputPresent(nodesObj, outgoing) {
-  const starts = Object.values(nodesObj).filter(n => roleOf(n) === 'start');
-  if (!starts.length) return [];
-  const visited = new Set();
-  const stopsWithoutOutput = new Set();
-  const stack = [starts[0].id];
-  while (stack.length) {
-    const cur = stack.pop();
-    if (visited.has(cur)) continue;
-    visited.add(cur);
-    const node = nodesObj[cur];
-    if (!node) continue;
-    if (roleOf(node) === 'stop') { stopsWithoutOutput.add(cur); continue; }
-    if (isOutputBlock(node)) continue;
-    for (const a of (outgoing[cur] || [])) stack.push(a.targetId);
-  }
-  return [...stopsWithoutOutput].map(stopId =>
-    F('R35', 'warning', `Auf mindestens einem Pfad zum Stop-Block »${displayLabel(nodesObj[stopId])}« erfolgt keine Ausgabe – Ergebnisse sollten sichtbar gemacht werden.`, [stopId]));
-}
-
 function checkR36Subprocess(nodesObj) {
   const findings = [];
   for (const node of Object.values(nodesObj)) {
@@ -1441,9 +1320,6 @@ function evaluateChart(nodesObj, arrowsObj) {
   findings = findings.concat(checkR29Labels(nodesObj));
   findings = findings.concat(checkR30DecisionContent(nodesObj));
   findings = findings.concat(checkR31ProcessContent(nodesObj));
-  findings = findings.concat(checkR33Atomicity(nodesObj));
-  findings = findings.concat(checkR34Dataflow(nodesObj, incoming, outgoing));
-  findings = findings.concat(checkR35OutputPresent(nodesObj, outgoing));
   findings = findings.concat(checkR36Subprocess(nodesObj));
   findings.sort((a, b) => {
     const sa = a.severity === 'error' ? 0 : 1, sb = b.severity === 'error' ? 0 : 1;

@@ -36,7 +36,7 @@ Regelgruppen:
 | C. Geometrie | Pfeile unten raus/oben rein, Verzweigungszweige, Kreuzungen, Ueberlappungen (`R14`,`R15`,`R17`-`R19`) |
 | D. Kontrollstrukturen | Verzweigung/Schleife sauber geoeffnet und geschlossen, keine leeren Zweige, Endlosschleifen-Heuristik (`R20`,`R22`,`R23`,`R25`,`R26`) |
 | E. Kantenbeschriftung | Ja/Nein an Verzweigungen, sonst nirgends (`R27`,`R28`) |
-| F. Inhalte | Beschriftungspflicht, Bedingung in Verzweigungen, Zuweisung in Anweisungen, Variablen vor Gebrauch zugewiesen, Ausgabe auf jedem Pfad, gueltige Funktionsreferenz (`R29`-`R31`,`R33`-`R36`) |
+| F. Inhalte | Beschriftungspflicht, Bedingung in Verzweigungen, Zuweisung in Anweisungen, gueltige Funktionsreferenz (`R29`-`R31`,`R36`) |
 
 Einige Regeln des allgemeinen Katalogs entfallen bewusst, weil es im Editor
 kein passendes Konzept gibt (siehe Kommentar am Anfang des Regelwerks in
@@ -48,8 +48,10 @@ kein passendes Konzept gibt (siehe Kommentar am Anfang des Regelwerks in
   ergibt sich rein aus dem Schleife/Schleife-zu-Paar.
 - `R21` SESE wird nicht separat geprueft, sondern faellt bei einer Verletzung
   der Verschachtelungspruefung (`R20`/`R22`/`R23`) mit auf.
-- `R32` es gibt keinen eigenen Eingabe/Ausgabe-Blocktyp; `R35` erkennt
-  Ausgaben stattdessen heuristisch anhand von Schluesselwoertern.
+- `R32` es gibt keinen eigenen Eingabe/Ausgabe-Blocktyp.
+- `R33`-`R35` (Ein-Anweisung-pro-Block, Datenfluss-Analyse, Ausgabe auf jedem
+  Pfad) sind bewusst deaktiviert, da sie bei kurzen Schul-Beispielen zu viele
+  Fehlalarme erzeugt haben.
 
 ### Eine neue Regel ergaenzen
 

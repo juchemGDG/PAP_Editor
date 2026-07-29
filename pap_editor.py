@@ -7,7 +7,7 @@ import tkinter as tk
 from xml.sax.saxutils import escape
 from dataclasses import dataclass, field
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
@@ -294,8 +294,11 @@ class Arrow:
 #        als Nebenprodukt der Verschachtelungsprüfung (R20/R22/R23): eine
 #        Verletzung führt dort zu einer Meldung über nicht passende
 #        Verschachtelung.
-#   R32  Es gibt keinen eigenen Eingabe/Ausgabe-Blocktyp; R35 erkennt
-#        Ausgaben heuristisch anhand von Schlüsselwörtern in Anweisungen.
+#   R32  Es gibt keinen eigenen Eingabe/Ausgabe-Blocktyp.
+#   R33  Ein-Anweisung-pro-Block (Atomicity) wird bewusst nicht geprüft.
+#   R34  Datenfluss-Analyse ("Variable vor Gebrauch zugewiesen") wird bewusst
+#        nicht geprüft – zu viele Fehlalarme bei kurzen Schul-Beispielen.
+#   R35  Ausgabe-auf-jedem-Pfad wird bewusst nicht geprüft.
 #
 # Zum Hinzufügen einer neuen Regel: eine Funktion `check_rXX_...(...)`
 # schreiben, die eine `List[Finding]` zurückgibt, und den Aufruf in
@@ -323,7 +326,6 @@ COMPARISON_OPS = ("==", "!=", "<=", ">=", "<", ">")
 BOOL_WORDS = ("und", "oder", "nicht", "and", "or", "not", "&&", "||")
 YES_WORDS = {"ja", "yes", "j", "y", "true", "wahr"}
 NO_WORDS = {"nein", "no", "n", "false", "falsch"}
-OUTPUT_KEYWORDS = ("ausgabe", "gib aus", "ausgeben", "ausgeb", "schreibe", "print", "cout", "system.out", "write")
 IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 ASSIGN_RE = re.compile(r":=|<-|(?<![=!<>])=(?!=)")
 _STRING_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
@@ -361,13 +363,6 @@ def extract_identifiers(text: str) -> Set[str]:
     """Identifiers referenced in a label; text inside quotes is a literal, not a variable."""
     cleaned = _STRING_LITERAL_RE.sub(" ", text or "")
     return {ident for ident in IDENT_RE.findall(cleaned) if ident.lower() not in _STOPWORDS}
-
-
-def is_output_block(node: "Node") -> bool:
-    if role_of(node) != "process":
-        return False
-    label = (_display_label(node) or "").strip().lower()
-    return any(label.startswith(kw) or kw in label for kw in OUTPUT_KEYWORDS)
 
 
 @dataclass
@@ -923,129 +918,6 @@ def check_r31_process_content(nodes: Dict[int, "Node"]) -> List[Finding]:
     return findings
 
 
-def check_r33_atomicity(nodes: Dict[int, "Node"]) -> List[Finding]:
-    findings = []
-    for node in nodes.values():
-        if shape_of(node) in UNLABELED_SHAPES:
-            continue
-        label = _display_label(node) or ""
-        if ";" in label:
-            findings.append(Finding(
-                "R33", "warning",
-                f"Der Block »{label}« enthält mehrere durch »;« getrennte Anweisungen – pro Block sollte nur eine Anweisung stehen.",
-                [node.id], [],
-            ))
-    return findings
-
-
-def _topological_order(nodes: Dict[int, "Node"], outgoing: Dict[int, List["Arrow"]], start_id: int) -> Optional[List[int]]:
-    """Kahn's algorithm restricted to the nodes reachable from start_id. Returns None on a cycle."""
-    reachable: Set[int] = set()
-    stack = [start_id]
-    while stack:
-        current = stack.pop()
-        if current in reachable:
-            continue
-        reachable.add(current)
-        for arrow in outgoing.get(current, []):
-            stack.append(arrow.target_id)
-    in_degree = {nid: 0 for nid in reachable}
-    for nid in reachable:
-        for arrow in outgoing.get(nid, []):
-            if arrow.target_id in in_degree:
-                in_degree[arrow.target_id] += 1
-    queue = [nid for nid, deg in in_degree.items() if deg == 0]
-    order: List[int] = []
-    while queue:
-        current = queue.pop()
-        order.append(current)
-        for arrow in outgoing.get(current, []):
-            if arrow.target_id in in_degree:
-                in_degree[arrow.target_id] -= 1
-                if in_degree[arrow.target_id] == 0:
-                    queue.append(arrow.target_id)
-    if len(order) != len(reachable):
-        return None
-    return order
-
-
-def check_r34_dataflow(nodes: Dict[int, "Node"], incoming: Dict[int, List["Arrow"]], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
-    """R34: Variablen müssen auf jedem Pfad vor dem Lesen zugewiesen worden sein."""
-    if len(nodes) > 500:
-        return []
-    starts = [n for n in nodes.values() if role_of(n) == "start"]
-    if len(starts) != 1:
-        return []
-    order = _topological_order(nodes, outgoing, starts[0].id)
-    if order is None:
-        return [Finding("R34", "warning", "Der Kontrollfluss enthält einen Kreis – die Datenfluss-Analyse (R34) ist für diesen Plan nicht durchführbar.", [], [])]
-
-    findings: List[Finding] = []
-    assigned_out: Dict[int, FrozenSet[str]] = {}
-    for node_id in order:
-        node = nodes[node_id]
-        preds = incoming.get(node_id, [])
-        pred_sets = [assigned_out[a.source_id] for a in preds if a.source_id in assigned_out]
-        assigned_in: FrozenSet[str] = frozenset(set.intersection(*[set(s) for s in pred_sets])) if pred_sets else frozenset()
-
-        role = role_of(node)
-        label = _display_label(node) or ""
-        assigned_here: Set[str] = set()
-        if role == "decision":
-            reads = extract_identifiers(label)
-        elif role == "process":
-            assignment = split_assignment(label)
-            if assignment:
-                lhs, rhs = assignment
-                reads = extract_identifiers(rhs)
-                assigned_here = extract_identifiers(lhs)
-            else:
-                reads = extract_identifiers(label)
-        else:
-            reads = set()
-
-        for var in sorted(reads - set(assigned_in)):
-            findings.append(Finding(
-                "R34", "warning",
-                f"Die Variable »{var}« wird in »{label}« gelesen, bevor sie auf jedem Pfad einen Wert erhalten hat.",
-                [node_id], [],
-            ))
-        assigned_out[node_id] = frozenset(set(assigned_in) | assigned_here)
-    return findings
-
-
-def check_r35_output_present(nodes: Dict[int, "Node"], outgoing: Dict[int, List["Arrow"]]) -> List[Finding]:
-    starts = [n for n in nodes.values() if role_of(n) == "start"]
-    if not starts:
-        return []
-    visited: Set[int] = set()
-    stops_without_output: Set[int] = set()
-    stack = [starts[0].id]
-    while stack:
-        current = stack.pop()
-        if current in visited:
-            continue
-        visited.add(current)
-        node = nodes.get(current)
-        if node is None:
-            continue
-        if role_of(node) == "stop":
-            stops_without_output.add(current)
-            continue
-        if is_output_block(node):
-            continue  # Pfad hat eine Ausgabe – nicht weiter verfolgen
-        for arrow in outgoing.get(current, []):
-            stack.append(arrow.target_id)
-    return [
-        Finding(
-            "R35", "warning",
-            f"Auf mindestens einem Pfad zum Stop-Block »{_display_label(nodes[stop_id])}« erfolgt keine Ausgabe – Ergebnisse sollten sichtbar gemacht werden.",
-            [stop_id], [],
-        )
-        for stop_id in stops_without_output
-    ]
-
-
 def check_r36_subprocess(nodes: Dict[int, "Node"]) -> List[Finding]:
     findings = []
     for node in nodes.values():
@@ -1100,9 +972,6 @@ def evaluate_chart(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"], disable
     findings += check_r29_labels(nodes)
     findings += check_r30_decision_content(nodes)
     findings += check_r31_process_content(nodes)
-    findings += check_r33_atomicity(nodes)
-    findings += check_r34_dataflow(nodes, incoming, outgoing)
-    findings += check_r35_output_present(nodes, outgoing)
     findings += check_r36_subprocess(nodes)
 
     if disabled_rules:
@@ -1138,9 +1007,6 @@ RULES: Dict[str, Tuple[str, str]] = {
     "R29": ("error", "Jeder Block ist beschriftet"),
     "R30": ("error", "Verzweigung enthält eine Bedingung"),
     "R31": ("error", "Anweisung enthält keinen Vergleich"),
-    "R33": ("warning", "Eine Anweisung pro Block"),
-    "R34": ("warning", "Variablen vor Gebrauch zugewiesen"),
-    "R35": ("warning", "Ausgabe auf jedem Pfad"),
     "R36": ("error", "Funktion referenziert gültigen Unterablaufplan"),
 }
 
