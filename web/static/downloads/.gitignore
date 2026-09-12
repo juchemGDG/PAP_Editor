@@ -1,0 +1,4 @@
+# Die Installationspakete sind Build-Artefakte und gehoeren nicht ins Repository.
+*
+!.gitignore
+!README.md

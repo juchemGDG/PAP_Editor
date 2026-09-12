@@ -41,6 +41,16 @@ Auf einer möglichst **alten** Distribution bauen → beste glibc-Kompatibilitä
 - Windows: `SetupIconFile`/`icon` in `pap_editor.iss` bzw. `pap_editor.spec` setzen.
 
 ## Auf der Homepage anbieten
-Die drei erzeugten Dateien (`.dmg`, `Setup.exe`, `.tar.gz`) einfach zum
-**Download** auf die Website legen. Das Programm selbst läuft *nicht* im Browser
-(siehe Hinweis in der Haupt-Antwort).
+Die drei erzeugten Dateien in den Ordner **`web/static/downloads/`** kopieren –
+der Menüpunkt „Desktop-Version" in der Web-App verlinkt genau dorthin:
+
+```bash
+cp dist/PAP-Editor.dmg                          web/static/downloads/
+cp dist/PAP-Editor-Setup.exe                    web/static/downloads/
+cp dist/PAP-Editor-1.0.0-linux-x86_64.tar.gz    web/static/downloads/PAP-Editor-linux-x86_64.tar.gz
+```
+
+Die Dateinamen müssen zur Liste `DOWNLOADS` in `web/static/pap.js` passen
+(siehe `web/static/downloads/README.md`). Fehlende Pakete erscheinen im Dialog
+ausgegraut. Das Programm selbst läuft *nicht* im Browser – die Web-Version ist
+ein eigenständiger Editor, die Pakete sind die Desktop-App.

@@ -8,7 +8,9 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
 - Inhalte per Doppelklick aendern, mehrzeilig mit Strg/Cmd+Enter (oder Shift+Enter)
 - Blockbreite frei einstellbar: Anfasser rechts unten ziehen, mehrere Bloecke
   mit "Breite angleichen" (Strg/Cmd+B) auf dieselbe Breite bringen;
-  Strg/Cmd+Shift+B stellt die automatische Breite wieder her
+  Strg/Cmd+Shift+B stellt die automatische Breite wieder her. Das gilt fuer
+  alle Bausteine inkl. "Schleife zu" – nur der runde "Verzweigung zu"-Punkt
+  behaelt seine Form
 - Pfeile per Maus zwischen Symbolen ziehen, auch als Ruecksprung zu einem
   weiter oben liegenden Block (der Pfeil muendet dann immer von oben ein)
 - Knickpunkte: markierten Pfeil anklicken setzt einen Knick, Ziehen verschiebt
@@ -73,6 +75,29 @@ kein passendes Konzept gibt (siehe Kommentar am Anfang des Regelwerks in
    nachtragen.
 4. Beide Implementierungen mit dem gleichen Testdiagramm gegenpruefen, damit
    Desktop- und Web-Version dieselben Meldungen liefern.
+
+## Desktop-Version aus der Web-App herunterladen
+
+Die Web-Version hat den Menuepunkt **"Desktop-Version"**. Er verlinkt auf die
+Installationspakete, die auf dem Server in
+
+```
+web/static/downloads/
+```
+
+liegen muessen (Flask liefert `web/static/` unter `/` aus, die Pakete sind also
+unter `http://<server>:5000/downloads/<dateiname>` erreichbar). Erwartete
+Dateinamen:
+
+| Betriebssystem | Dateiname |
+|---|---|
+| macOS   | `PAP-Editor.dmg` |
+| Windows | `PAP-Editor-Setup.exe` |
+| Linux   | `PAP-Editor-linux-x86_64.tar.gz` |
+
+Fehlt eine Datei, wird der Eintrag im Dialog ausgegraut ("noch nicht
+verfuegbar") – man kann also mit einer Plattform anfangen. Details und die
+Bau-Befehle stehen in `web/static/downloads/README.md` und `packaging/README.md`.
 
 ## Start
 

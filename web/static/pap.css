@@ -293,7 +293,7 @@ body {
 }
 
 /* ─── Modals ──────────────────────────────────────────────── */
-#modal, #prompt-modal {
+#modal, #prompt-modal, #download-modal {
   display: none;
   position: fixed;
   inset: 0;
@@ -303,7 +303,7 @@ body {
   z-index: 200;
 }
 
-#modal-box, #prompt-box {
+#modal-box, #prompt-box, #download-box {
   background: #fff;
   border-radius: 14px;
   padding: 24px;
@@ -312,7 +312,7 @@ body {
   box-shadow: 0 20px 60px rgba(0,0,0,0.35);
 }
 
-#modal-box h2, #prompt-box h2 {
+#modal-box h2, #prompt-box h2, #download-box h2 {
   font-size: 16px;
   margin-bottom: 12px;
   color: #0f172a;
@@ -329,7 +329,49 @@ body {
   line-height: 1.5;
 }
 
-#modal-close {
+#download-intro, #download-note {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+
+#download-note {
+  margin: 14px 0 18px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+#download-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.download-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #0f172a;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.download-item:hover { border-color: #2563eb; background: #eff6ff; }
+
+.download-item.missing {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.download-os   { font-weight: 700; flex: 1; }
+.download-meta { font-size: 12px; color: #64748b; }
+
+#modal-close, #download-close {
   background: #2563eb;
   color: #fff;
   border: none;

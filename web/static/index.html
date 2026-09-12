@@ -6,7 +6,7 @@
         maximum-scale=1.0, user-scalable=no">
   <title>PAP Editor</title>
   <!-- Cache-Buster: bei jedem Deploy hochzählen, sonst liefern Browser/Hosting alte pap.js/pap.css aus -->
-  <link rel="stylesheet" href="pap.css?v=4">
+  <link rel="stylesheet" href="pap.css?v=5">
 </head>
 <body>
 
@@ -58,6 +58,7 @@
         <button id="btn-png"   class="btn-menu">PNG export</button>
         <button id="btn-jpg"   class="btn-menu">JPG export</button>
         <button id="btn-svg"   class="btn-menu">SVG export</button>
+        <button id="btn-desktop" class="btn-menu">Desktop-Version</button>
       </nav>
       <div id="menu-overlay"></div>
 
@@ -84,6 +85,25 @@
   </div>
 </div>
 
+<!-- ═══════ DOWNLOAD MODAL ═══════ -->
+<div id="download-modal">
+  <div id="download-box">
+    <h2>PAP Editor für den Desktop</h2>
+    <p id="download-intro">
+      Die Desktop-Version läuft ohne Browser und speichert Diagramme direkt
+      auf dem Rechner. Funktionsumfang identisch zur Web-Version.
+    </p>
+    <div id="download-list"></div>
+    <p id="download-note">
+      macOS: Beim ersten Start Rechtsklick auf die App → „Öffnen“, da die App
+      nicht bei Apple notarisiert ist.
+    </p>
+    <div style="text-align:right">
+      <button id="download-close">Schließen</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════ PROMPT MODAL ═══════ -->
 <div id="prompt-modal">
   <div id="prompt-box">
@@ -101,6 +121,6 @@
   </div>
 </div>
 
-<script src="pap.js?v=4"></script>
+<script src="pap.js?v=5"></script>
 </body>
 </html>

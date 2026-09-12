@@ -78,6 +78,11 @@ NODE_TYPES = [
 UNLABELED_SHAPES = {"connector", "loop_end"}
 
 
+def _is_resizable(node) -> bool:
+    """Runde Konnektoren behalten ihre Form – alle anderen Bloecke sind breitenverstellbar."""
+    return node is not None and shape_of(node) != "connector"
+
+
 def shape_of(node: "Node") -> str:
     return NODE_SHAPE.get(node.template_label, node.kind or "rect")
 
@@ -1382,8 +1387,7 @@ class PapEditor(tk.Tk):
 
     def _draw_width_grip(self, node: Node) -> None:
         """Anfasser rechts unten an der Auswahl – zieht die Blockbreite auf."""
-        shape = shape_of(node)
-        if shape == "connector" or shape in UNLABELED_SHAPES:
+        if not _is_resizable(node):
             return
         gx, gy = self._width_grip_pos(node)
         self.canvas.create_rectangle(gx - GRIP, gy - GRIP, gx + GRIP, gy + GRIP,
@@ -1524,20 +1528,15 @@ class PapEditor(tk.Tk):
 
     def set_node_width(self, node: Node, width: float) -> None:
         """Breite von Hand festlegen (rastet aufs Raster, Hoehe folgt dem Text)."""
-        shape = shape_of(node)
-        if shape == "connector" or shape in UNLABELED_SHAPES:
+        if not _is_resizable(node):
             return
         node.width = max(MIN_NODE_W, self.snap(width))
         node.manual_width = True
         self._fit_node_size(node)
 
     def _resizable_nodes(self) -> List[Node]:
-        result = []
-        for nid in self.selected_node_ids:
-            node = self.nodes.get(nid)
-            if node and shape_of(node) != "connector" and shape_of(node) not in UNLABELED_SHAPES:
-                result.append(node)
-        return result
+        return [node for node in (self.nodes.get(nid) for nid in self.selected_node_ids)
+                if _is_resizable(node)]
 
     def _is_typing(self) -> bool:
         """Waehrend einer Texteingabe duerfen die Tastenkuerzel nicht zuschlagen."""
@@ -2119,8 +2118,7 @@ class PapEditor(tk.Tk):
         node = self.nodes.get(next(iter(self.selected_node_ids)))
         if not node:
             return None
-        shape = shape_of(node)
-        if shape == "connector" or shape in UNLABELED_SHAPES:
+        if not _is_resizable(node):
             return None
         gx, gy = self._width_grip_pos(node)
         if abs(x - gx) <= GRIP + 4 and abs(y - gy) <= GRIP + 4:

@@ -416,8 +416,7 @@ function widthGrip(n) {
 }
 
 function drawWidthGrip(c, n) {
-  const sh = shapeOf(n);
-  if (sh === 'connector' || UNLABELED.has(sh)) return;
+  if (!isResizable(n)) return;
   const [gx,gy] = widthGrip(n);
   c.fillStyle = '#ffffff'; c.strokeStyle = ACCENT; c.lineWidth = 2;
   c.beginPath(); c.rect(gx-GRIP, gy-GRIP, GRIP*2, GRIP*2);
@@ -568,8 +567,7 @@ function hitWidthGrip(wx, wy) {
   if (selNodes.size !== 1) return null;
   const n = nodes[[...selNodes][0]];
   if (!n) return null;
-  const sh = shapeOf(n);
-  if (sh === 'connector' || UNLABELED.has(sh)) return null;
+  if (!isResizable(n)) return null;
   const [gx,gy] = widthGrip(n);
   return (Math.abs(wx-gx) <= GRIP+4 && Math.abs(wy-gy) <= GRIP+4) ? n.id : null;
 }
@@ -659,16 +657,17 @@ function fitSize(n) {
 
 /** Breite manuell festlegen (rastet aufs Raster, Höhe folgt dem Text). */
 function setNodeWidth(n, w) {
-  const sh = shapeOf(n);
-  if (sh === 'connector' || UNLABELED.has(sh)) return;
+  if (!isResizable(n)) return;
   n.width = Math.max(MIN_NODE_W, snap(w));
   n.manualWidth = true;
   fitSize(n);
 }
 
+/** Runde Konnektoren behalten ihre Form – alle anderen Blöcke sind breitenverstellbar. */
+function isResizable(n) { return !!n && shapeOf(n) !== 'connector'; }
+
 function resizableNodes(ids) {
-  return [...ids].map(id => nodes[id])
-                 .filter(n => n && shapeOf(n) !== 'connector' && !UNLABELED.has(shapeOf(n)));
+  return [...ids].map(id => nodes[id]).filter(isResizable);
 }
 
 /** Alle markierten Blöcke auf die Breite des breitesten bringen. */
@@ -2104,6 +2103,49 @@ function updateStatus() {
   setStatus(`Knoten: ${Object.keys(nodes).length}   Verbindungen: ${Object.keys(arrows).length}   Datei: ${fname}`);
 }
 
+// ── Download der Desktop-Version ──────────────────────────────
+// Die Dateien liegen auf dem Server unter  web/static/downloads/
+// und sind damit unter  /downloads/<dateiname>  erreichbar.
+const DOWNLOADS = [
+  { os: 'macOS',   file: 'PAP-Editor.dmg',                 hint: 'Apple Silicon & Intel · .dmg' },
+  { os: 'Windows', file: 'PAP-Editor-Setup.exe',           hint: 'Installer · .exe' },
+  { os: 'Linux',   file: 'PAP-Editor-linux-x86_64.tar.gz', hint: 'entpacken & starten · .tar.gz' },
+];
+
+function humanSize(bytes) {
+  if (!bytes || isNaN(bytes)) return '';
+  const mb = bytes / (1024*1024);
+  return mb >= 1 ? `${mb.toFixed(0)} MB` : `${Math.max(1, Math.round(bytes/1024))} KB`;
+}
+
+function showDownloads() {
+  const list = document.getElementById('download-list');
+  list.innerHTML = '';
+  for (const item of DOWNLOADS) {
+    const url = 'downloads/' + item.file;
+    const a = document.createElement('a');
+    a.className = 'download-item';
+    a.href = url;
+    a.setAttribute('download', item.file);
+    a.innerHTML = `<span class="download-os"></span><span class="download-meta"></span>`;
+    a.querySelector('.download-os').textContent   = item.os;
+    a.querySelector('.download-meta').textContent = item.hint;
+    list.appendChild(a);
+
+    // Fehlende Pakete ausgrauen, vorhandene mit Dateigröße zeigen
+    fetch(url, { method: 'HEAD' }).then(r => {
+      if (!r.ok) {
+        a.classList.add('missing');
+        a.querySelector('.download-meta').textContent = 'noch nicht verfügbar';
+        return;
+      }
+      const size = humanSize(Number(r.headers.get('content-length')));
+      if (size) a.querySelector('.download-meta').textContent = `${item.hint} · ${size}`;
+    }).catch(() => { /* offline o. ä.: Link einfach anbieten */ });
+  }
+  document.getElementById('download-modal').style.display = 'flex';
+}
+
 function showModal(title, msg) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').textContent  = msg;
@@ -2180,6 +2222,7 @@ function init() {
   document.getElementById('btn-png')  .addEventListener('click', exportPNG);
   document.getElementById('btn-jpg')  .addEventListener('click', exportJPG);
   document.getElementById('btn-svg')  .addEventListener('click', exportSVG);
+  document.getElementById('btn-desktop').addEventListener('click', showDownloads);
   document.getElementById('back-btn') .addEventListener('click', closeFunction);
   document.getElementById('sidebar-toggle').addEventListener('click', toggleSidebar);
   document.getElementById('menu-toggle').addEventListener('click', toggleMenu);
@@ -2205,6 +2248,10 @@ function init() {
   document.getElementById('modal').addEventListener('click', e => {
     if (e.target===document.getElementById('modal')) document.getElementById('modal').style.display='none';
   });
+
+  const dlModal = document.getElementById('download-modal');
+  document.getElementById('download-close').addEventListener('click', () => { dlModal.style.display='none'; });
+  dlModal.addEventListener('click', e => { if (e.target===dlModal) dlModal.style.display='none'; });
 
   document.getElementById('prompt-ok').addEventListener('click', () => {
     closePrompt(promptEl ? promptEl.value : '');
