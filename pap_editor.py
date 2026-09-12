@@ -3,10 +3,11 @@ import math
 import os
 import re
 import sys
+import time
 import tkinter as tk
 from xml.sax.saxutils import escape
 from dataclasses import dataclass, field
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Dict, List, Optional, Set, Tuple
 
 try:
@@ -95,6 +96,13 @@ PALETTE_ITEM_H = 74
 PORT_RADIUS = 6
 SELECTION_MARGIN = 8
 GRID_SIZE = 40
+
+NODE_FONT = ("Helvetica", 11, "bold")
+LINE_H = 14           # Zeilenhöhe im Blocktext
+MIN_NODE_W = 60       # kleinste manuell einstellbare Blockbreite
+GRIP = 6              # halbe Kantenlänge des Breiten-Anfassers
+BEND_RADIUS = 5       # Radius der Knickpunkt-Anfasser
+APPROACH = 24         # Mindestlänge der Einmündung in einen Port
 PALETTE_IMAGE_BOUNDS = (96, 38)
 CANVAS_IMAGE_BOUNDS = (104, 44)
 
@@ -137,6 +145,58 @@ def loop_end_points(x: float, y: float, w: float, h: float) -> List[float]:
 
 
 PORT_NORMAL = {"top": (0, -1), "bottom": (0, 1), "left": (-1, 0), "right": (1, 0)}
+
+
+def wrap_lines(measure, text: str, max_w: float) -> List[str]:
+    """Text in Zeilen zerlegen: erst harte Umbrueche (\\n, per Strg/Cmd+Enter
+    eingegeben), dann zusaetzlich an Wortgrenzen, wenn die Breite nicht reicht.
+    Identisch zu wrapLines() in web/static/pap.js."""
+    lines: List[str] = []
+    for para in str(text or "").split("\n"):
+        current = ""
+        for word in para.split(" "):
+            candidate = f"{current} {word}" if current else word
+            if measure(candidate) <= max_w or not current:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+    return lines
+
+
+def approach_points(start: Tuple[float, float], waypoints: List[Tuple[float, float]],
+                    end: Tuple[float, float], target_port: str) -> List[Tuple[float, float]]:
+    """Sorgt dafuer, dass der Pfeil immer aus der zum Ziel-Port passenden
+    Richtung einmuendet: oben von oben nach unten, unten von unten nach oben,
+    rechts von rechts nach links. Liegt der letzte Knickpunkt auf der falschen
+    Seite, wird ein zusaetzlicher (nicht gespeicherter) Umlenkpunkt ergaenzt.
+    Identisch zu approachPoints() in web/static/pap.js."""
+    points = [(float(px), float(py)) for px, py in waypoints]
+    last = points[-1] if points else start
+    ex, ey = end
+    if target_port == "top" and last[1] <= ey - 1:
+        return points
+    if target_port == "bottom" and last[1] >= ey + 1:
+        return points
+    if target_port == "right" and last[0] >= ex + 1:
+        return points
+    if target_port == "left" and last[0] <= ex - 1:
+        return points
+
+    if target_port in ("top", "bottom"):
+        direction = -1 if target_port == "top" else 1
+        cx = last[0]
+        if abs(cx - ex) < 1:                 # sonst liefe der Pfeil auf sich selbst zurueck
+            cx = ex + APPROACH * 2
+        points.append((cx, ey + direction * APPROACH))
+    else:
+        direction = 1 if target_port == "right" else -1
+        cy = last[1]
+        if abs(cy - ey) < 1:
+            cy = ey + APPROACH * 2
+        points.append((ex + direction * APPROACH, cy))
+    return points
 
 
 def orthogonal_points(start: Tuple[float, float], source_port: str,
@@ -221,7 +281,8 @@ def paint_node(canvas: tk.Canvas, node: "Node", outline: str, width: int, hole_b
     else:
         canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=width)
     if shape not in UNLABELED_SHAPES:
-        canvas.create_text(x, y, text=node.label, fill=TEXT_COLOR, font=("Helvetica", 11, "bold"), width=w - 18)
+        # Tk bricht selbst an \n und – dank width – zusaetzlich an Wortgrenzen um
+        canvas.create_text(x, y, text=node.label, fill=TEXT_COLOR, font=NODE_FONT, width=w - 18)
 
 
 @dataclass
@@ -237,6 +298,7 @@ class Node:
     template_label: str = ""
     subdiagram: str = ""
     text_anchor: str = "center"
+    manual_width: bool = False      # True: Breite wurde von Hand gesetzt und waechst nicht mehr mit
 
     def bbox(self) -> Tuple[float, float, float, float]:
         return (self.x - self.width / 2, self.y - self.height / 2, self.x + self.width / 2, self.y + self.height / 2)
@@ -287,9 +349,9 @@ class Arrow:
 #   R07  Block-IDs sind über das dict[id]-Modell technisch immer eindeutig.
 #   R13  Es gibt keinen eigenständigen Seitenverweis-Konnektor; "Verzweigung
 #        zu" übernimmt ausschließlich die Rolle des Verzweigungsendes.
-#   R16  Schleifen haben hier keinen gezeichneten Rücksprungpfeil (kein
-#        "links"-Port) – die Wiederholung ergibt sich rein aus dem
-#        Schleife/Schleife-zu-Paar, siehe R20/R22.
+#   (R16 ist umgesetzt: ein von Hand gezeichneter Rücksprung von einem
+#    Schleife-zu-Block an einen weiter oben liegenden Schleifenanfang ist
+#    erlaubt und wird nur als Hinweis gemeldet – siehe check_geometry_ports.)
 #   R21  SESE wird nicht als eigene Prüfung umgesetzt, sondern ergibt sich
 #        als Nebenprodukt der Verschachtelungsprüfung (R20/R22/R23): eine
 #        Verletzung führt dort zu einer Meldung über nicht passende
@@ -347,7 +409,8 @@ _UNLABELED_ROLE_NAMES = {"branchEnd": "Verzweigung zu", "loopEnd": "Schleife zu"
 def _display_label(node: "Node") -> str:
     """Label for messages; falls back to a role name for intentionally unlabelled shapes."""
     if node.label and node.label.strip():
-        return node.label
+        # Zeilenumbrueche im Blocktext fuer Meldungen zu einer Zeile zusammenziehen
+        return re.sub(r"\s*\n\s*", " ", node.label)
     return _UNLABELED_ROLE_NAMES.get(role_of(node), node.label or "?")
 
 
@@ -595,11 +658,21 @@ def check_geometry_ports(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"]) -
                 [source.id, target.id], [arrow.id],
             ))
         if arrow.source_port != "right" and target.y < source.y:
-            findings.append(Finding(
-                "R17", "warning",
-                f"Der Pfeil von »{_display_label(source)}« nach »{_display_label(target)}« führt nach oben statt nach unten.",
-                [source.id, target.id], [arrow.id],
-            ))
+            # Rücksprung von einem Schleifenende an einen weiter oben liegenden
+            # Schleifenanfang ist zulässig – er wird nur als Hinweis gemeldet (R16).
+            if role_of(source) == "loopEnd" and role_of(target) == "loopStart" and arrow.target_port == "top":
+                findings.append(Finding(
+                    "R16", "warning",
+                    f"Der Pfeil von »{_display_label(source)}« nach »{_display_label(target)}« ist ein Rücksprung nach oben. "
+                    f"Das ist erlaubt – prüfe, ob die Wiederholung so gewollt ist und der Pfeil von oben in die Schleife mündet.",
+                    [source.id, target.id], [arrow.id],
+                ))
+            else:
+                findings.append(Finding(
+                    "R17", "warning",
+                    f"Der Pfeil von »{_display_label(source)}« nach »{_display_label(target)}« führt nach oben statt nach unten.",
+                    [source.id, target.id], [arrow.id],
+                ))
     for node in nodes.values():
         if role_of(node) != "decision":
             continue
@@ -994,6 +1067,7 @@ RULES: Dict[str, Tuple[str, str]] = {
     "R12": ("warning", "Keine doppelten Pfeile"),
     "R14": ("error", "Pfeile unten raus, oben rein"),
     "R15": ("error", "Verzweigungszweige sauber getrennt"),
+    "R16": ("warning", "Rücksprung zu einer Schleife nur als Hinweis"),
     "R17": ("warning", "Fluss von oben nach unten"),
     "R18": ("warning", "Keine Pfeilkreuzungen"),
     "R19": ("warning", "Keine überlappenden Blöcke"),
@@ -1018,11 +1092,16 @@ class PapEditor(tk.Tk):
         self.geometry("1400x900")
         self.minsize(1180, 760)
 
+        self._node_font = tkfont.Font(family=NODE_FONT[0], size=NODE_FONT[1], weight=NODE_FONT[2])
+
         self.nodes: Dict[int, Node] = {}
         self.arrows: Dict[int, Arrow] = {}
         self.selected_node_ids: Set[int] = set()
         self.selected_arrow_id: Optional[int] = None
         self.drag_node_id: Optional[int] = None
+        self.drag_bend: Optional[Tuple[int, int]] = None    # (arrow_id, index) beim Verschieben eines Knickpunkts
+        self.drag_width_node: Optional[int] = None          # Block, dessen Breite gerade gezogen wird
+        self.last_bend: Optional[Tuple[int, int, float]] = None  # zuletzt per Klick gesetzter Knickpunkt (+ Zeitpunkt)
         self.drag_offset: Tuple[float, float] = (0, 0)
         self.drag_snapshot: Optional[str] = None
         self.drag_moved = False
@@ -1125,7 +1204,10 @@ class PapEditor(tk.Tk):
             text="Mehrfachauswahl: Rahmen ziehen · Shift-Klick\n"
                  "Kopieren ⌘/Strg+C · Einfügen ⌘/Strg+V\n"
                  "SVG kopieren ⌘/Strg+Shift+C · Undo ⌘/Strg+Z\n"
-                 "Funktion: Doppelklick · Zurück: Esc · Löschen: Entf",
+                 "Funktion: Doppelklick · Zurück: Esc · Löschen: Entf\n"
+                 "Breite: Griff rechts unten · angleichen ⌘/Strg+B\n"
+                 "Text: ⌘/Strg+Enter = Zeilenumbruch\n"
+                 "Pfeil-Knick: markierten Pfeil anklicken · Doppelklick löscht",
             bg=SIDEBAR_BG, fg=PALETTE_MUTED, justify="left", font=("Helvetica", 8),
         )
         hint.pack(anchor="w", padx=16, pady=(0, 12))
@@ -1156,6 +1238,7 @@ class PapEditor(tk.Tk):
         menubar.grid(row=0, column=2, sticky="e", padx=(6, 0))
         for text, command, kind in [
             ("Diagramm prüfen", self.check_diagram, "Accent.TButton"),
+            ("Breite angleichen", self.equalize_width, "Sidebar.TButton"),
             ("Neu", self.new_diagram, "Sidebar.TButton"),
             ("Laden", self.load_diagram, "Sidebar.TButton"),
             ("Speichern", self.save_diagram, "Sidebar.TButton"),
@@ -1205,6 +1288,10 @@ class PapEditor(tk.Tk):
             self.bind_all(seq, self.select_all)
         for seq in ("<Control-Shift-C>", "<Command-Shift-C>"):
             self.bind_all(seq, self.copy_svg)
+        for seq in ("<Control-b>", "<Command-b>"):
+            self.bind_all(seq, self.equalize_width)
+        for seq in ("<Control-Shift-B>", "<Command-Shift-B>"):
+            self.bind_all(seq, self.reset_width)
         self.bind_all("<Escape>", self.close_function)
 
         self.palette.bind("<Button-1>", self.on_palette_click)
@@ -1286,6 +1373,23 @@ class PapEditor(tk.Tk):
             self.canvas.create_rectangle(x1 - 6, y1 - 6, x2 + 6, y2 + 6, outline=ACCENT, width=1, dash=(3, 3))
         paint_node(self.canvas, node, outline, width, CANVAS_BG)
         self._draw_ports(node)
+        if selected and len(self.selected_node_ids) == 1:
+            self._draw_width_grip(node)
+
+    def _width_grip_pos(self, node: Node) -> Tuple[float, float]:
+        _, _, x2, y2 = node.bbox()
+        return x2 + GRIP, y2 + GRIP
+
+    def _draw_width_grip(self, node: Node) -> None:
+        """Anfasser rechts unten an der Auswahl – zieht die Blockbreite auf."""
+        shape = shape_of(node)
+        if shape == "connector" or shape in UNLABELED_SHAPES:
+            return
+        gx, gy = self._width_grip_pos(node)
+        self.canvas.create_rectangle(gx - GRIP, gy - GRIP, gx + GRIP, gy + GRIP,
+                                     fill="#ffffff", outline=ACCENT, width=2)
+        self.canvas.create_line(gx - 3, gy - 1, gx + 3, gy - 1, fill=ACCENT)
+        self.canvas.create_line(gx - 3, gy + 2, gx + 3, gy + 2, fill=ACCENT)
 
     def _allowed_ports(self, node: Node) -> List[str]:
         # Verzweigung auf/zu verzweigen bzw. führen nur nach rechts zusammen
@@ -1337,7 +1441,8 @@ class PapEditor(tk.Tk):
             return None
         start = source.ports()[arrow.source_port]
         end = target.ports()[arrow.target_port]
-        return orthogonal_points(start, arrow.source_port, list(arrow.waypoints), end, arrow.target_port)
+        points = approach_points(start, list(arrow.waypoints), end, arrow.target_port)
+        return orthogonal_points(start, arrow.source_port, points, end, arrow.target_port)
 
     def _arrow_label_pos(self, route: List[Tuple[float, float]]) -> Tuple[float, float]:
         # midpoint of the longest segment reads best for a right-angled path
@@ -1359,6 +1464,14 @@ class PapEditor(tk.Tk):
             mx, my = self._arrow_label_pos(route)
             self.canvas.create_rectangle(mx - 3, my - 9, mx + 6 + 7 * len(arrow.label), my + 9, fill=CANVAS_BG, outline="")
             self.canvas.create_text(mx, my, text=arrow.label, fill=TEXT_COLOR, font=("Helvetica", 10, "bold"), anchor="w")
+        if arrow.id == self.selected_arrow_id:
+            self._draw_bends(arrow)
+
+    def _draw_bends(self, arrow: Arrow) -> None:
+        """Knickpunkte des markierten Pfeils als verschiebbare Griffe zeichnen."""
+        for wx, wy in arrow.waypoints:
+            self.canvas.create_oval(wx - BEND_RADIUS, wy - BEND_RADIUS, wx + BEND_RADIUS, wy + BEND_RADIUS,
+                                    fill="#ffffff", outline=ACCENT, width=2)
 
     def _draw_temp_arrow(self) -> None:
         if not self.connection_source or not self.temp_arrow_target:
@@ -1368,7 +1481,8 @@ class PapEditor(tk.Tk):
         if not source:
             return
         start = source.ports()[source_port]
-        route = orthogonal_points(start, source_port, [], self.temp_arrow_target, "top")
+        points = approach_points(start, [], self.temp_arrow_target, "top")
+        route = orthogonal_points(start, source_port, points, self.temp_arrow_target, "top")
         flat = [coord for point in route for coord in point]
         self.canvas.create_line(*flat, fill="#7c3aed", width=2, arrow="last", dash=(4, 4))
 
@@ -1382,20 +1496,87 @@ class PapEditor(tk.Tk):
         self.next_node_id += 1
         return node
 
+    def _measure(self, text: str) -> float:
+        return self._node_font.measure(text)
+
     def _fit_node_size(self, node: Node) -> None:
-        """Grow the block so its label fits the shape (diamonds taper, connectors are round)."""
+        """Grow the block so its label fits the shape (diamonds taper, connectors are round).
+
+        Bloecke mit manuell gesetzter Breite wachsen nicht mehr in die Breite –
+        der Text bricht dann um und die Hoehe waechst."""
         shape = shape_of(node)
         if shape == "connector":
             node.width = node.height = 26
             return
         if shape in UNLABELED_SHAPES:
             return
-        text_w = len(node.label) * 8 + 24
-        if shape == "diamond":
-            node.width = max(node.width, self.snap(text_w * 1.7))
-            node.height = max(node.height, 88)
-        else:
-            node.width = max(node.width, self.snap(text_w))
+        label = node.label or ""
+        if not node.manual_width:
+            text_w = max((self._measure(para) for para in label.split("\n")), default=0) + 24
+            if shape == "diamond":
+                node.width = max(node.width, self.snap(text_w * 1.7))
+            else:
+                node.width = max(node.width, self.snap(text_w))
+        node.width = max(MIN_NODE_W, node.width)
+        lines = len(wrap_lines(self._measure, label, max(20, node.width - 18)))
+        need_h = lines * LINE_H + (40 if shape == "diamond" else 22)
+        node.height = max(88 if shape == "diamond" else NODE_H, need_h)
+
+    def set_node_width(self, node: Node, width: float) -> None:
+        """Breite von Hand festlegen (rastet aufs Raster, Hoehe folgt dem Text)."""
+        shape = shape_of(node)
+        if shape == "connector" or shape in UNLABELED_SHAPES:
+            return
+        node.width = max(MIN_NODE_W, self.snap(width))
+        node.manual_width = True
+        self._fit_node_size(node)
+
+    def _resizable_nodes(self) -> List[Node]:
+        result = []
+        for nid in self.selected_node_ids:
+            node = self.nodes.get(nid)
+            if node and shape_of(node) != "connector" and shape_of(node) not in UNLABELED_SHAPES:
+                result.append(node)
+        return result
+
+    def _is_typing(self) -> bool:
+        """Waehrend einer Texteingabe duerfen die Tastenkuerzel nicht zuschlagen."""
+        try:
+            return isinstance(self.focus_get(), (tk.Text, tk.Entry, ttk.Entry))
+        except KeyError:
+            return False
+
+    def equalize_width(self, event: Optional[tk.Event] = None) -> str:
+        """Alle markierten Bloecke auf die Breite des breitesten bringen."""
+        if event is not None and self._is_typing():
+            return ""
+        selection = self._resizable_nodes()
+        if len(selection) < 2:
+            self.status.set("Mindestens zwei Bloecke markieren, um die Breite anzugleichen.")
+            return "break"
+        width = max(node.width for node in selection)
+        self._push_undo()
+        for node in selection:
+            self.set_node_width(node, width)
+        self._redraw()
+        self.status.set(f"{len(selection)} Bloecke auf {int(width)} px Breite gebracht")
+        return "break"
+
+    def reset_width(self, event: Optional[tk.Event] = None) -> str:
+        """Automatische Breite wiederherstellen."""
+        if event is not None and self._is_typing():
+            return ""
+        selection = self._resizable_nodes()
+        if not selection:
+            return "break"
+        self._push_undo()
+        for node in selection:
+            node.manual_width = False
+            node.width = NODE_W
+            self._fit_node_size(node)
+        self._redraw()
+        self.status.set(f"{len(selection)} Block/Bloecke auf automatische Breite zurueckgesetzt")
+        return "break"
 
     def _node_image_key(self, node: Node) -> str:
         for label, _, rel in NODE_TYPES:
@@ -1413,18 +1594,28 @@ class PapEditor(tk.Tk):
         target = self.nodes.get(target_id)
         if not source or not target:
             return None
-        if target.y <= source.y - 20:
-            return None
         if source_port == "top" or target_port == "bottom":
             return None
         if self._has_path(target_id, source_id):
             return None
-        if source_port == "bottom" and target_port == "top" and target.y < source.y:
-            return None
         arrow = Arrow(self.next_arrow_id, source_id, source_port, target_id, target_port)
+        # Liegt das Ziel weiter oben, wird ein Weg aussen herum vorbelegt; die
+        # Knickpunkte lassen sich anschliessend am Raster verschieben.
+        if target.y < source.y:
+            arrow.waypoints = self._back_jump_waypoints(source, source_port, target, target_port)
         self.arrows[arrow.id] = arrow
         self.next_arrow_id += 1
         return arrow
+
+    def _back_jump_waypoints(self, source: Node, source_port: str,
+                             target: Node, target_port: str) -> List[Tuple[float, float]]:
+        """Vorschlag fuer den Umweg eines Pfeils, der zu einem hoeher liegenden Block fuehrt."""
+        if source_port != "bottom" or target_port != "top":
+            return []
+        lane = self.snap(max(source.x + source.width / 2, target.x + target.width / 2) + self.grid_size)
+        below = self.snap(source.y + source.height / 2 + self.grid_size)
+        above = self.snap(target.y - target.height / 2 - self.grid_size)
+        return [(self.snap(source.x), below), (lane, below), (lane, above)]
 
     def _has_path(self, start_id: int, target_id: int) -> bool:
         seen = set()
@@ -1533,6 +1724,23 @@ class PapEditor(tk.Tk):
     def on_canvas_click(self, event: tk.Event) -> None:
         x, y = self._canvas_coords(event)
         shift = bool(event.state & 0x0001)
+
+        # Knickpunkt des markierten Pfeils verschieben
+        bend = self._hit_test_bend(x, y)
+        if bend is not None:
+            self.drag_bend = (self.selected_arrow_id, bend)
+            self.drag_snapshot = self._serialize()
+            self.drag_moved = False
+            return
+
+        # Breiten-Anfasser des markierten Blocks ziehen
+        grip_id = self._hit_test_width_grip(x, y)
+        if grip_id is not None:
+            self.drag_width_node = grip_id
+            self.drag_snapshot = self._serialize()
+            self.drag_moved = False
+            return
+
         if shift:
             arrow_id = self._hit_test_arrow(x, y)
             if arrow_id is not None:
@@ -1561,15 +1769,40 @@ class PapEditor(tk.Tk):
         else:
             if not shift:
                 self.selected_node_ids = set()
-            self.selected_arrow_id = self._hit_test_arrow(x, y)
+            arrow_id = self._hit_test_arrow(x, y)
             self.connection_source = None
-            if self.selected_arrow_id is None:
+            # Zweiter Klick auf denselben Pfeil setzt einen Knickpunkt
+            if arrow_id is not None and arrow_id == self.selected_arrow_id:
+                self._insert_bend_point(arrow_id, x, y)
+            self.selected_arrow_id = arrow_id
+            if arrow_id is None:
                 self.rubber_band = (x, y, x, y)
             self._redraw()
 
     def on_canvas_drag(self, event: tk.Event) -> None:
         x, y = self._canvas_coords(event)
-        if self.drag_node_id and self.drag_node_id in self.nodes:
+        if self.drag_bend is not None:
+            arrow_id, index = self.drag_bend
+            arrow = self.arrows.get(arrow_id)
+            if not arrow or index >= len(arrow.waypoints):
+                self.drag_bend = None
+                return
+            nx, ny = self.snap(x), self.snap(y)
+            if (nx, ny) != tuple(arrow.waypoints[index]):
+                arrow.waypoints[index] = (nx, ny)
+                self.drag_moved = True
+            self._redraw()
+        elif self.drag_width_node is not None:
+            node = self.nodes.get(self.drag_width_node)
+            if not node:
+                self.drag_width_node = None
+                return
+            new_width = max(MIN_NODE_W, self.snap(2 * (x - node.x - GRIP)))
+            if new_width != node.width:
+                self.set_node_width(node, new_width)
+                self.drag_moved = True
+            self._redraw()
+        elif self.drag_node_id and self.drag_node_id in self.nodes:
             node = self.nodes[self.drag_node_id]
             nx = self.snap(x - self.drag_offset[0])
             ny = self.snap(y - self.drag_offset[1])
@@ -1590,6 +1823,18 @@ class PapEditor(tk.Tk):
             self._redraw()
 
     def on_canvas_release(self, event: tk.Event) -> None:
+        if self.drag_bend is not None or self.drag_width_node is not None:
+            if self.drag_moved and self.drag_snapshot is not None:
+                self.undo_stack.append(self.drag_snapshot)
+                if len(self.undo_stack) > 100:
+                    self.undo_stack.pop(0)
+                self.redo_stack.clear()
+            self.drag_bend = None
+            self.drag_width_node = None
+            self.drag_snapshot = None
+            self.drag_moved = False
+            self._redraw()
+            return
         if self.rubber_band:
             x0, y0, x1, y1 = self.rubber_band
             self.selected_node_ids = self._nodes_in_rect(x0, y0, x1, y1)
@@ -1685,6 +1930,25 @@ class PapEditor(tk.Tk):
 
     def on_canvas_double_click(self, event: tk.Event) -> None:
         x, y = self._canvas_coords(event)
+
+        # Doppelklick auf einen Knickpunkt entfernt ihn
+        bend = self._hit_test_bend(x, y)
+        if bend is not None:
+            self._remove_bend_point(self.selected_arrow_id, bend)
+            return
+
+        # Der erste Klick eines Doppelklicks auf einen markierten Pfeil hat
+        # gerade einen Knickpunkt gesetzt – der war nicht gemeint.
+        if (self.last_bend is not None and time.monotonic() - self.last_bend[2] < 0.6
+                and self._hit_test_arrow(x, y) == self.last_bend[0]):
+            arrow_id, index, _ = self.last_bend
+            arrow = self.arrows.get(arrow_id)
+            if arrow and index < len(arrow.waypoints):
+                arrow.waypoints.pop(index)
+                if self.undo_stack:
+                    self.undo_stack.pop()
+            self.last_bend = None
+
         node_id = self._hit_test_node(x, y)
         if node_id:
             node = self.nodes[node_id]
@@ -1693,7 +1957,7 @@ class PapEditor(tk.Tk):
                 return
             if shape_of(node) in UNLABELED_SHAPES:
                 return
-            new_label = simpledialog.askstring("Symbol bearbeiten", "Inhalt des Symbols:", initialvalue=node.label, parent=self)
+            new_label = self._ask_multiline("Symbol bearbeiten", "Inhalt des Symbols:", node.label)
             if new_label is not None:
                 self._push_undo()
                 node.label = new_label.strip() or node.label
@@ -1709,8 +1973,61 @@ class PapEditor(tk.Tk):
                 arrow.label = new_label.strip()
                 self._redraw()
 
+    def _ask_multiline(self, title: str, prompt: str, initial: str) -> Optional[str]:
+        """Mehrzeiliger Eingabedialog.
+
+        Enter schliesst den Dialog, Strg/Cmd+Enter bzw. Shift+Enter fuegen einen
+        Zeilenumbruch in den Blocktext ein."""
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        result: Dict[str, Optional[str]] = {"value": None}
+
+        tk.Label(dialog, text=prompt, anchor="w", font=("Helvetica", 11)).pack(fill="x", padx=14, pady=(14, 6))
+        text = tk.Text(dialog, width=46, height=4, font=("Helvetica", 12), wrap="word",
+                       relief="solid", borderwidth=1, highlightthickness=0)
+        text.pack(fill="both", expand=True, padx=14)
+        text.insert("1.0", initial or "")
+        tk.Label(dialog, text="Strg/⌘+Enter oder Shift+Enter = Zeilenumbruch · Enter = OK",
+                 fg="#64748b", font=("Helvetica", 9)).pack(anchor="w", padx=14, pady=(6, 0))
+
+        def confirm(event: Optional[tk.Event] = None) -> str:
+            result["value"] = text.get("1.0", "end-1c")
+            dialog.destroy()
+            return "break"
+
+        def cancel(event: Optional[tk.Event] = None) -> str:
+            dialog.destroy()
+            return "break"
+
+        def newline(event: Optional[tk.Event] = None) -> str:
+            text.insert("insert", "\n")
+            return "break"
+
+        buttons = tk.Frame(dialog)
+        buttons.pack(fill="x", padx=14, pady=12)
+        ttk.Button(buttons, text="OK", command=confirm).pack(side="right")
+        ttk.Button(buttons, text="Abbrechen", command=cancel).pack(side="right", padx=(0, 6))
+
+        for seq in ("<Control-Return>", "<Command-Return>", "<Shift-Return>"):
+            text.bind(seq, newline)
+        text.bind("<Return>", confirm)          # muss nach den Kombinationen kommen
+        dialog.bind("<Escape>", cancel)
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+
+        text.focus_set()
+        text.mark_set("insert", "end-1c")
+        dialog.grab_set()
+        self.wait_window(dialog)
+        return result["value"]
+
     def on_canvas_right_click(self, event: tk.Event) -> None:
         x, y = self._canvas_coords(event)
+        bend = self._hit_test_bend(x, y)
+        if bend is not None:
+            self._remove_bend_point(self.selected_arrow_id, bend)
+            return
         node_id = self._hit_test_node(x, y)
         if node_id:
             self.delete_node(node_id)
@@ -1738,19 +2055,77 @@ class PapEditor(tk.Tk):
     def _best_target_port(self, source_port: str, source: Node, target: Node) -> str:
         # diamonds and the merge connector may also be entered from the right side
         if shape_of(target) not in ("diamond", "connector"):
-            return "top" if target.y >= source.y else "bottom"
+            return "top"
         if source.x - target.x > target.width / 2 + 4:   # source clearly to the right
             return "right"
-        return "top" if target.y >= source.y else "bottom"
+        return "top"
 
     def _insert_bend_point(self, arrow_id: int, x: float, y: float) -> None:
         arrow = self.arrows.get(arrow_id)
         if not arrow:
             return
+        index = self._bend_insert_index(arrow, x, y)
         self._push_undo()
-        arrow.waypoints.append((self.snap(x), self.snap(y)))
+        arrow.waypoints.insert(index, (self.snap(x), self.snap(y)))
+        self.last_bend = (arrow_id, index, time.monotonic())
         self.selected_arrow_id = arrow_id
         self._redraw()
+
+    def _bend_insert_index(self, arrow: Arrow, x: float, y: float) -> int:
+        """An welcher Stelle der Knickpunkt-Liste liegt der angeklickte Abschnitt?"""
+        route = self._arrow_route(arrow)
+        if not route:
+            return len(arrow.waypoints)
+        best, segment = float("inf"), 0
+        for i, ((ax, ay), (bx, by)) in enumerate(zip(route, route[1:])):
+            distance = self._distance_to_segment(x, y, ax, ay, bx, by)
+            if distance < best:
+                best, segment = distance, i
+        index, ri = 0, 0
+        for k, (wx, wy) in enumerate(arrow.waypoints):
+            while ri < len(route) and not (abs(route[ri][0] - wx) < 0.5 and abs(route[ri][1] - wy) < 0.5):
+                ri += 1
+            if ri > segment:
+                break
+            index, ri = k + 1, ri + 1
+        return index
+
+    def _remove_bend_point(self, arrow_id: int, index: int) -> None:
+        arrow = self.arrows.get(arrow_id)
+        if not arrow or index >= len(arrow.waypoints):
+            return
+        self._push_undo()
+        arrow.waypoints.pop(index)
+        self.last_bend = None
+        self._redraw()
+
+    def _hit_test_bend(self, x: float, y: float) -> Optional[int]:
+        """Knickpunkt des markierten Pfeils treffen? -> Index oder None"""
+        if self.selected_arrow_id is None:
+            return None
+        arrow = self.arrows.get(self.selected_arrow_id)
+        if not arrow:
+            return None
+        for index in range(len(arrow.waypoints) - 1, -1, -1):
+            wx, wy = arrow.waypoints[index]
+            if math.hypot(wx - x, wy - y) <= BEND_RADIUS + 6:
+                return index
+        return None
+
+    def _hit_test_width_grip(self, x: float, y: float) -> Optional[int]:
+        """Breiten-Anfasser des einzeln markierten Blocks treffen?"""
+        if len(self.selected_node_ids) != 1:
+            return None
+        node = self.nodes.get(next(iter(self.selected_node_ids)))
+        if not node:
+            return None
+        shape = shape_of(node)
+        if shape == "connector" or shape in UNLABELED_SHAPES:
+            return None
+        gx, gy = self._width_grip_pos(node)
+        if abs(x - gx) <= GRIP + 4 and abs(y - gy) <= GRIP + 4:
+            return node.id
+        return None
 
     def _edit_arrow_waypoints(self, arrow_id: int, default_x: float, default_y: float) -> None:
         arrow = self.arrows.get(arrow_id)
@@ -1954,14 +2329,29 @@ class PapEditor(tk.Tk):
             "next_arrow_id": self.next_arrow_id,
         }
 
+    @staticmethod
+    def _normalize_item(item: dict, mapping: Dict[str, str], allowed: Set[str]) -> dict:
+        """Dateien der Web-Version nutzen camelCase-Schluessel – hier umschreiben
+        und unbekannte Felder verwerfen, damit neue Felder abwaertskompatibel bleiben."""
+        data = {mapping.get(key, key): value for key, value in item.items()}
+        return {key: value for key, value in data.items() if key in allowed}
+
+    NODE_KEY_MAP = {"imageRel": "image_rel", "templateLabel": "template_label",
+                    "textAnchor": "text_anchor", "manualWidth": "manual_width"}
+    ARROW_KEY_MAP = {"sourceId": "source_id", "sourcePort": "source_port",
+                     "targetId": "target_id", "targetPort": "target_port"}
+
     def _load_payload(self, payload: dict) -> None:
         self.nodes.clear()
         self.arrows.clear()
+        node_fields = set(Node.__dataclass_fields__)
+        arrow_fields = set(Arrow.__dataclass_fields__)
         for item in payload.get("nodes", []):
-            node = Node(**item)
+            node = Node(**self._normalize_item(item, self.NODE_KEY_MAP, node_fields))
             self.nodes[node.id] = node
         for item in payload.get("arrows", []):
-            arrow = Arrow(**item)
+            arrow = Arrow(**self._normalize_item(item, self.ARROW_KEY_MAP, arrow_fields))
+            arrow.waypoints = [(float(wx), float(wy)) for wx, wy in arrow.waypoints]
             self.arrows[arrow.id] = arrow
         self.next_node_id = payload.get("next_node_id", max(self.nodes.keys(), default=0) + 1)
         self.next_arrow_id = payload.get("next_arrow_id", max(self.arrows.keys(), default=0) + 1)
@@ -2219,8 +2609,14 @@ class PapEditor(tk.Tk):
         else:
             s.append(f'<rect x="{x1}" y="{y1}" width="{w:.0f}" height="{h:.0f}" fill="{fill}" stroke="{border}" stroke-width="2"/>')
         if shape not in UNLABELED_SHAPES and node.label:
-            s.append(f'<text x="{cx}" y="{cy}" font-family="Helvetica" font-size="12" font-weight="bold" '
-                     f'text-anchor="middle" dominant-baseline="central" fill="{TEXT_COLOR}">{escape(node.label)}</text>')
+            lines = wrap_lines(self._measure, node.label, max(20, w - 18))
+            start_y = cy - (len(lines) - 1) * LINE_H / 2
+            spans = "".join(
+                f'<tspan x="{cx}" y="{start_y + i * LINE_H:.1f}">{escape(line)}</tspan>'
+                for i, line in enumerate(lines)
+            )
+            s.append('<text font-family="Helvetica" font-size="12" font-weight="bold" '
+                     f'text-anchor="middle" dominant-baseline="central" fill="{TEXT_COLOR}">{spans}</text>')
         return "\n".join(s)
 
     def render_to_image(self):
@@ -2236,9 +2632,9 @@ class PapEditor(tk.Tk):
             target = self.nodes.get(arrow.target_id)
             if not source or not target:
                 continue
-            start = source.ports()[arrow.source_port]
-            end = target.ports()[arrow.target_port]
-            route = orthogonal_points(start, arrow.source_port, list(arrow.waypoints), end, arrow.target_port)
+            route = self._arrow_route(arrow)
+            if not route:
+                continue
             flat = [coord for point in route for coord in point]
             draw.line(flat, fill="#111111", width=3, joint="curve")
             self._draw_arrow_head(draw, flat[-4], flat[-3], flat[-2], flat[-1])
@@ -2267,7 +2663,8 @@ class PapEditor(tk.Tk):
             else:
                 draw.rectangle([x1, y1, x2, y2], fill=fill, outline=border, width=3)
             if shape not in UNLABELED_SHAPES:
-                label = node.label
+                # gleiche Zeilenaufteilung wie auf der Zeichenflaeche
+                label = "\n".join(wrap_lines(self._measure, node.label, max(20, node.width - 18)))
                 text_bbox = draw.multiline_textbbox((0, 0), label, font=font, align="center")
                 tw = text_bbox[2] - text_bbox[0]
                 th = text_bbox[3] - text_bbox[1]

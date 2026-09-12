@@ -6,7 +6,7 @@
         maximum-scale=1.0, user-scalable=no">
   <title>PAP Editor</title>
   <!-- Cache-Buster: bei jedem Deploy hochzählen, sonst liefern Browser/Hosting alte pap.js/pap.css aus -->
-  <link rel="stylesheet" href="pap.css?v=3">
+  <link rel="stylesheet" href="pap.css?v=4">
 </head>
 <body>
 
@@ -35,6 +35,9 @@
       Kopieren Strg/⌘+C · Einfügen Strg/⌘+V<br>
       Undo Strg/⌘+Z · Löschen: Entf oder 🗑-Button<br>
       Funktion: Doppelklick · Zurück: Esc<br>
+      Breite: Griff rechts unten ziehen · gleiche Breite Strg/⌘+B<br>
+      Text: Strg/⌘+Enter = Zeilenumbruch<br>
+      Pfeil-Knick: markierten Pfeil anklicken · Doppelklick löscht<br>
       iPad: 2-Finger-Wischen zum Scrollen
     </div>
   </aside>
@@ -48,6 +51,7 @@
 
       <nav id="menubar">
         <button id="btn-check" class="btn-menu btn-accent">Diagramm prüfen</button>
+        <button id="btn-width" class="btn-menu">Breite angleichen</button>
         <button id="btn-new"   class="btn-menu">Neu</button>
         <button id="btn-load"  class="btn-menu">Laden</button>
         <button id="btn-save"  class="btn-menu">Speichern</button>
@@ -87,6 +91,9 @@
     <label id="prompt-label" for="prompt-input"></label>
     <input type="text" id="prompt-input" autocomplete="off"
            autocorrect="off" autocapitalize="off" spellcheck="false">
+    <textarea id="prompt-textarea" rows="3" autocomplete="off"
+              autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+    <div id="prompt-hint">Strg/⌘+Enter oder Shift+Enter = Zeilenumbruch · Enter = OK</div>
     <div id="prompt-buttons">
       <button id="prompt-cancel">Abbrechen</button>
       <button id="prompt-ok">OK</button>
@@ -94,6 +101,6 @@
   </div>
 </div>
 
-<script src="pap.js?v=3"></script>
+<script src="pap.js?v=4"></script>
 </body>
 </html>

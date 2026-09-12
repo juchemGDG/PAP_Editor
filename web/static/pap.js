@@ -54,6 +54,13 @@ const NODE_H = 44;
 const PORT_R = 6;
 const SEL_MARGIN = 8;
 
+const NODE_FONT  = 'bold 11px Helvetica,Arial,sans-serif';
+const LINE_H     = 14;      // Zeilenhöhe im Blocktext
+const MIN_NODE_W = 60;      // kleinste manuell einstellbare Blockbreite
+const GRIP       = 6;       // halbe Kantenlänge des Breiten-Anfassers
+const BEND_R     = 5;       // Radius der Knickpunkt-Anfasser
+const APPROACH   = 24;      // Mindestlänge der Einmündung in einen Port
+
 // ════════════════════════════════════════════════════════════
 // Globaler State
 // ════════════════════════════════════════════════════════════
@@ -88,6 +95,7 @@ let connSrc      = null;   // { nodeId, port }
 let tempTarget   = null;   // [wx, wy] – Endpunkt des Temp-Pfeils
 let dragSnap     = null;
 let dragMoved    = false;
+let lastBend     = null;   // zuletzt per Klick gesetzter Knickpunkt (für Doppelklick-Korrektur)
 
 // Palette Drag
 let palDragItem    = null;
@@ -218,8 +226,38 @@ function orthoPts(start, srcPort, waypoints, end, tgtPort) {
 function arrowRoute(a) {
   const s = nodes[a.sourceId], t = nodes[a.targetId];
   if (!s || !t) return null;
-  return orthoPts(ports(s)[a.sourcePort], a.sourcePort,
-                  a.waypoints || [], ports(t)[a.targetPort], a.targetPort);
+  const start = ports(s)[a.sourcePort], end = ports(t)[a.targetPort];
+  const wps = approachPoints(start, a.waypoints || [], end, a.targetPort);
+  return orthoPts(start, a.sourcePort, wps, end, a.targetPort);
+}
+
+/**
+ * Sorgt dafür, dass der Pfeil immer aus der zum Ziel-Port passenden Richtung
+ * einmündet: oben von oben nach unten, unten von unten nach oben, rechts von
+ * rechts nach links. Liegt der letzte Knickpunkt auf der falschen Seite, wird
+ * ein zusätzlicher (nicht gespeicherter) Umlenkpunkt eingefügt.
+ */
+function approachPoints(start, waypoints, end, tgtPort) {
+  const wps = waypoints.map(p => [p[0], p[1]]);
+  const last = wps.length ? wps[wps.length-1] : start;
+  const [ex,ey] = end;
+  if (tgtPort === 'top'    && last[1] <= ey - 1) return wps;
+  if (tgtPort === 'bottom' && last[1] >= ey + 1) return wps;
+  if (tgtPort === 'right'  && last[0] >= ex + 1) return wps;
+  if (tgtPort === 'left'   && last[0] <= ex - 1) return wps;
+
+  if (tgtPort === 'top' || tgtPort === 'bottom') {
+    const dir = tgtPort === 'top' ? -1 : 1;
+    let cx = last[0];
+    if (Math.abs(cx - ex) < 1) cx = ex + APPROACH*2;   // sonst liefe der Pfeil auf sich selbst zurück
+    wps.push([cx, ey + dir*APPROACH]);
+  } else {
+    const dir = tgtPort === 'right' ? 1 : -1;
+    let cy = last[1];
+    if (Math.abs(cy - ey) < 1) cy = ey + APPROACH*2;
+    wps.push([ex + dir*APPROACH, cy]);
+  }
+  return wps;
 }
 
 function labelPos(route) {
@@ -362,27 +400,66 @@ function drawNode(c, n) {
 
   if (!UNLABELED.has(sh) && n.label) {
     c.fillStyle = TEXT_COLOR;
-    c.font = 'bold 11px Helvetica,Arial,sans-serif';
+    c.font = NODE_FONT;
     c.textAlign = 'center'; c.textBaseline = 'middle';
     wrapText(c, n.label, x, y, w-18);
   }
 
   drawPorts(c, n);
+  if (sel && selNodes.size === 1) drawWidthGrip(c, n);
+}
+
+/** Anfasser rechts unten an der Auswahl – zieht die Blockbreite auf. */
+function widthGrip(n) {
+  const [,, x2, y2] = bbox(n);
+  return [x2 + GRIP, y2 + GRIP];
+}
+
+function drawWidthGrip(c, n) {
+  const sh = shapeOf(n);
+  if (sh === 'connector' || UNLABELED.has(sh)) return;
+  const [gx,gy] = widthGrip(n);
+  c.fillStyle = '#ffffff'; c.strokeStyle = ACCENT; c.lineWidth = 2;
+  c.beginPath(); c.rect(gx-GRIP, gy-GRIP, GRIP*2, GRIP*2);
+  c.fill(); c.stroke();
+  c.strokeStyle = ACCENT; c.lineWidth = 1;
+  c.beginPath();
+  c.moveTo(gx-3, gy-1); c.lineTo(gx+3, gy-1);
+  c.moveTo(gx-3, gy+2); c.lineTo(gx+3, gy+2);
+  c.stroke();
+}
+
+/**
+ * Text in Zeilen zerlegen: zuerst an harten Umbrüchen (\n, per Strg/⌘+Enter
+ * eingegeben), danach zusätzlich an Wortgrenzen, wenn die Breite nicht reicht.
+ */
+function wrapLines(c, text, maxW) {
+  const lines = [];
+  for (const para of String(text == null ? '' : text).split('\n')) {
+    let cur = '';
+    for (const w of para.split(' ')) {
+      const test = cur ? cur+' '+w : w;
+      if (c.measureText(test).width <= maxW || !cur) { cur = test; }
+      else { lines.push(cur); cur = w; }
+    }
+    lines.push(cur);
+  }
+  return lines;
+}
+
+/** Messkontext ohne Bildschirmbezug – auch vor dem ersten redraw() nutzbar. */
+let measCanvas = null;
+function measureCtx() {
+  if (!measCanvas) measCanvas = document.createElement('canvas');
+  const c = measCanvas.getContext('2d');
+  c.font = NODE_FONT;
+  return c;
 }
 
 function wrapText(c, text, cx, cy, maxW) {
-  const words = text.split(' ');
-  const lines = [];
-  let cur = '';
-  for (const w of words) {
-    const test = cur ? cur+' '+w : w;
-    if (c.measureText(test).width <= maxW || !cur) { cur = test; }
-    else { lines.push(cur); cur = w; }
-  }
-  if (cur) lines.push(cur);
-  const LH = 14;
-  const startY = cy - (lines.length * LH)/2 + LH/2;
-  for (let i = 0; i < lines.length; i++) c.fillText(lines[i], cx, startY + i*LH);
+  const lines = wrapLines(c, text, maxW);
+  const startY = cy - (lines.length * LINE_H)/2 + LINE_H/2;
+  for (let i = 0; i < lines.length; i++) c.fillText(lines[i], cx, startY + i*LINE_H);
 }
 
 function drawPorts(c, n) {
@@ -427,6 +504,16 @@ function drawArrow(c, a, dashed) {
     c.textAlign = 'left'; c.textBaseline = 'middle';
     c.fillText(a.label, mx, my);
   }
+  if (a.id === selArrow) drawBends(c, a);
+}
+
+/** Knickpunkte des markierten Pfeils als verschiebbare Griffe zeichnen. */
+function drawBends(c, a) {
+  for (const [wx,wy] of (a.waypoints || [])) {
+    c.fillStyle = '#ffffff'; c.strokeStyle = ACCENT; c.lineWidth = 2;
+    c.beginPath(); c.arc(wx, wy, BEND_R, 0, Math.PI*2);
+    c.fill(); c.stroke();
+  }
 }
 
 function arrowHead(c, x1,y1,x2,y2, color) {
@@ -442,7 +529,8 @@ function drawTempArrow(c) {
   if (!connSrc || !tempTarget) return;
   const src = nodes[connSrc.nodeId]; if (!src) return;
   const start = ports(src)[connSrc.port];
-  const route = orthoPts(start, connSrc.port, [], tempTarget, 'top');
+  const route = orthoPts(start, connSrc.port,
+                         approachPoints(start, [], tempTarget, 'top'), tempTarget, 'top');
   c.strokeStyle = '#7c3aed'; c.fillStyle = '#7c3aed';
   c.lineWidth = 2; c.setLineDash([4,4]);
   c.beginPath();
@@ -472,6 +560,28 @@ function hitPort(n, wx, wy) {
     const [px,py] = ps[nm];
     if (Math.hypot(px-wx, py-wy) <= 14) return nm;
   }
+  return null;
+}
+
+/** Breiten-Anfasser des einzeln markierten Blocks treffen? */
+function hitWidthGrip(wx, wy) {
+  if (selNodes.size !== 1) return null;
+  const n = nodes[[...selNodes][0]];
+  if (!n) return null;
+  const sh = shapeOf(n);
+  if (sh === 'connector' || UNLABELED.has(sh)) return null;
+  const [gx,gy] = widthGrip(n);
+  return (Math.abs(wx-gx) <= GRIP+4 && Math.abs(wy-gy) <= GRIP+4) ? n.id : null;
+}
+
+/** Knickpunkt des markierten Pfeils treffen? → Index oder null */
+function hitBend(wx, wy) {
+  if (selArrow === null) return null;
+  const a = arrows[selArrow];
+  if (!a) return null;
+  const wps = a.waypoints || [];
+  for (let i = wps.length-1; i >= 0; i--)
+    if (Math.hypot(wps[i][0]-wx, wps[i][1]-wy) <= BEND_R+6) return i;
   return null;
 }
 
@@ -525,13 +635,61 @@ function addNode(templateLabel, kind, text, x, y, imageRel) {
   return n;
 }
 
+/** Blöcke mit manuell gesetzter Breite wachsen nicht mehr automatisch mit. */
 function fitSize(n) {
   const sh = shapeOf(n);
   if (sh === 'connector')    { n.width = n.height = 26; return; }
   if (UNLABELED.has(sh))     return;
-  const tw = n.label.length * 8 + 24;
-  if (sh === 'diamond') { n.width = Math.max(n.width, snap(tw*1.7)); n.height = Math.max(n.height, 88); }
-  else                  { n.width = Math.max(n.width, snap(tw)); }
+  const c = measureCtx();
+  const label = n.label || '';
+
+  if (!n.manualWidth) {
+    let tw = 0;
+    for (const para of label.split('\n')) tw = Math.max(tw, c.measureText(para).width);
+    tw += 24;
+    if (sh === 'diamond') n.width = Math.max(n.width, snap(tw*1.7));
+    else                  n.width = Math.max(n.width, snap(tw));
+  }
+  n.width = Math.max(MIN_NODE_W, n.width);
+
+  const lines = wrapLines(c, label, Math.max(20, n.width - 18)).length;
+  const needH = lines*LINE_H + (sh === 'diamond' ? 40 : 22);
+  n.height = Math.max(sh === 'diamond' ? 88 : NODE_H, needH);
+}
+
+/** Breite manuell festlegen (rastet aufs Raster, Höhe folgt dem Text). */
+function setNodeWidth(n, w) {
+  const sh = shapeOf(n);
+  if (sh === 'connector' || UNLABELED.has(sh)) return;
+  n.width = Math.max(MIN_NODE_W, snap(w));
+  n.manualWidth = true;
+  fitSize(n);
+}
+
+function resizableNodes(ids) {
+  return [...ids].map(id => nodes[id])
+                 .filter(n => n && shapeOf(n) !== 'connector' && !UNLABELED.has(shapeOf(n)));
+}
+
+/** Alle markierten Blöcke auf die Breite des breitesten bringen. */
+function equalizeWidth() {
+  const list = resizableNodes(selNodes);
+  if (list.length < 2) { setStatus('Mindestens zwei Blöcke markieren, um die Breite anzugleichen.'); return; }
+  const w = Math.max(...list.map(n => n.width));
+  pushUndo();
+  for (const n of list) setNodeWidth(n, w);
+  redraw();
+  setStatus(`${list.length} Blöcke auf ${Math.round(w)} px Breite gebracht`);
+}
+
+/** Automatische Breite wiederherstellen. */
+function resetWidth() {
+  const list = resizableNodes(selNodes);
+  if (!list.length) return;
+  pushUndo();
+  for (const n of list) { n.manualWidth = false; n.width = NODE_W; fitSize(n); }
+  redraw();
+  setStatus(`${list.length} Block/Blöcke auf automatische Breite zurückgesetzt`);
 }
 
 function hasPath(startId, targetId) {
@@ -550,20 +708,30 @@ function addArrow(srcId, srcPort, tgtId, tgtPort) {
   if (srcId === tgtId) return null;
   const s = nodes[srcId], t = nodes[tgtId];
   if (!s || !t) return null;
-  if (t.y <= s.y - 20) return null;
   if (srcPort === 'top' || tgtPort === 'bottom') return null;
   if (hasPath(tgtId, srcId)) return null;
-  if (srcPort === 'bottom' && tgtPort === 'top' && t.y < s.y) return null;
   const a = { id: nextAid++, sourceId: srcId, sourcePort: srcPort,
               targetId: tgtId, targetPort: tgtPort, waypoints: [], label: '' };
+  // Liegt das Ziel weiter oben, wird ein Weg außen herum vorbelegt; die
+  // Knickpunkte lassen sich anschließend am Raster verschieben.
+  if (t.y < s.y) a.waypoints = backJumpWaypoints(s, srcPort, t, tgtPort);
   arrows[a.id] = a; return a;
 }
 
-function bestTgtPort(srcPort, src, tgt) {
+/** Vorschlag für den Umweg eines Pfeils, der zu einem höher liegenden Block führt. */
+function backJumpWaypoints(s, srcPort, t, tgtPort) {
+  if (srcPort !== 'bottom' || tgtPort !== 'top') return [];
+  const lane = snap(Math.max(s.x + s.width/2, t.x + t.width/2) + gridSize);
+  const below = snap(s.y + s.height/2 + gridSize);
+  const above = snap(t.y - t.height/2 - gridSize);
+  return [[snap(s.x), below], [lane, below], [lane, above]];
+}
+
+function bestTgtPort(src, tgt) {
   const sh = shapeOf(tgt);
-  if (sh !== 'diamond' && sh !== 'connector') return tgt.y >= src.y ? 'top' : 'bottom';
+  if (sh !== 'diamond' && sh !== 'connector') return 'top';
   if (src.x - tgt.x > tgt.width/2 + 4) return 'right';
-  return tgt.y >= src.y ? 'top' : 'bottom';
+  return 'top';
 }
 
 function removeNode(id) {
@@ -622,7 +790,15 @@ function statePayload() {
 
 function loadPayload(p) {
   nodes = {}; arrows = {};
-  for (const item of (p.nodes || [])) { const n = {...item}; nodes[n.id] = n; }
+  for (const item of (p.nodes || [])) {
+    const n = {...item};
+    // Kompatibilität desktop ↔ web (snake_case → camelCase)
+    for (const [snake, camel] of [['image_rel','imageRel'], ['template_label','templateLabel'],
+                                  ['text_anchor','textAnchor'], ['manual_width','manualWidth']]) {
+      if (n[snake] !== undefined) { n[camel] = n[snake]; delete n[snake]; }
+    }
+    nodes[n.id] = n;
+  }
   for (const item of (p.arrows || [])) {
     const a = {...item};
     // Kompatibilität desktop ↔ web (camelCase ↔ snake_case)
@@ -758,7 +934,8 @@ function roleOf(n) { return ROLE_BY_TEMPLATE[n.templateLabel] || 'process'; }
 const ROLE_NAMES_DE = { process: 'Anweisungs', loopStart: 'Schleifen', loopEnd: 'Schleife-zu', subprocess: 'Funktions' };
 const UNLABELED_ROLE_NAMES = { branchEnd: 'Verzweigung zu', loopEnd: 'Schleife zu' };
 function displayLabel(n) {
-  if (n.label && n.label.trim()) return n.label;
+  // Zeilenumbrüche im Blocktext für Meldungen zu einer Zeile zusammenziehen
+  if (n.label && n.label.trim()) return n.label.replace(/\s*\n\s*/g, ' ');
   return UNLABELED_ROLE_NAMES[roleOf(n)] || n.label || '?';
 }
 
@@ -978,9 +1155,17 @@ function checkGeometryPorts(nodesObj, arrowsObj) {
         [source.id, target.id], [a.id]));
     }
     if (a.sourcePort !== 'right' && target.y < source.y) {
-      findings.push(F('R17', 'warning',
-        `Der Pfeil von »${displayLabel(source)}« nach »${displayLabel(target)}« führt nach oben statt nach unten.`,
-        [source.id, target.id], [a.id]));
+      // Rücksprung von einem Schleifenende an einen weiter oben liegenden
+      // Schleifenanfang ist zulässig – er wird nur als Hinweis gemeldet (R16).
+      if (roleOf(source) === 'loopEnd' && roleOf(target) === 'loopStart' && a.targetPort === 'top') {
+        findings.push(F('R16', 'warning',
+          `Der Pfeil von »${displayLabel(source)}« nach »${displayLabel(target)}« ist ein Rücksprung nach oben. Das ist erlaubt – prüfe, ob die Wiederholung so gewollt ist und der Pfeil von oben in die Schleife mündet.`,
+          [source.id, target.id], [a.id]));
+      } else {
+        findings.push(F('R17', 'warning',
+          `Der Pfeil von »${displayLabel(source)}« nach »${displayLabel(target)}« führt nach oben statt nach unten.`,
+          [source.id, target.id], [a.id]));
+      }
     }
   }
   for (const node of Object.values(nodesObj)) {
@@ -1495,8 +1680,13 @@ function svgNode(n, tx, ty) {
   } else {
     parts.push(`<rect x="${x1}" y="${y1}" width="${w}" height="${h}" fill="${fill}" stroke="${border}" stroke-width="2"/>`);
   }
-  if (!UNLABELED.has(sh) && n.label)
-    parts.push(`<text x="${cx}" y="${cy}" font-family="Helvetica" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="central" fill="${TEXT_COLOR}">${xmlEsc(n.label)}</text>`);
+  if (!UNLABELED.has(sh) && n.label) {
+    const lines  = wrapLines(measureCtx(), n.label, Math.max(20, w-18));
+    const startY = cy - (lines.length-1)*LINE_H/2;
+    const tspans = lines.map((ln,i) =>
+      `<tspan x="${cx}" y="${(startY+i*LINE_H).toFixed(1)}">${xmlEsc(ln)}</tspan>`).join('');
+    parts.push(`<text font-family="Helvetica" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="central" fill="${TEXT_COLOR}">${tspans}</text>`);
+  }
   return parts.join('\n');
 }
 
@@ -1518,6 +1708,22 @@ function pointerDown(clientX, clientY, shift, btn) {
   const [wx,wy] = worldPt(clientX, clientY);
 
   if (btn === 2) { rightClick(wx,wy); return; }
+
+  // Knickpunkt des markierten Pfeils verschieben
+  const bend = hitBend(wx,wy);
+  if (bend !== null) {
+    dragState = {type:'bend', arrowId:selArrow, index:bend};
+    dragSnap = serialize(); dragMoved = false;
+    redraw(); return;
+  }
+
+  // Breiten-Anfasser des markierten Blocks ziehen
+  const gripId = hitWidthGrip(wx,wy);
+  if (gripId !== null) {
+    dragState = {type:'width', nodeId:gripId};
+    dragSnap = serialize(); dragMoved = false;
+    redraw(); return;
+  }
 
   if (shift) {
     const aid = hitArrow(wx,wy);
@@ -1545,9 +1751,12 @@ function pointerDown(clientX, clientY, shift, btn) {
     }
   } else {
     if (!shift) selNodes = new Set();
-    selArrow = hitArrow(wx,wy);
+    const aid = hitArrow(wx,wy);
     connSrc = null;
-    if (selArrow === null)
+    // Zweiter Klick auf denselben Pfeil setzt einen Knickpunkt
+    if (aid !== null && aid === selArrow) insertBend(aid, wx, wy);
+    selArrow = aid;
+    if (aid === null)
       dragState = {type:'rubberband', x0:wx, y0:wy, x1:wx, y1:wy};
     redraw();
   }
@@ -1565,6 +1774,19 @@ function pointerMove(clientX, clientY) {
         dragMoved = true;
         for (const id of selNodes) if(nodes[id]) { nodes[id].x+=dx; nodes[id].y+=dy; }
       }
+      redraw();
+    } else if (dragState.type === 'bend') {
+      const a = arrows[dragState.arrowId];
+      const p = a && a.waypoints[dragState.index];
+      if (!p) { dragState=null; return; }
+      const nx = snap(wx), ny = snap(wy);
+      if (nx !== p[0] || ny !== p[1]) { p[0]=nx; p[1]=ny; dragMoved = true; }
+      redraw();
+    } else if (dragState.type === 'width') {
+      const n = nodes[dragState.nodeId];
+      if (!n) { dragState=null; return; }
+      const nw = Math.max(MIN_NODE_W, snap(2*(wx - n.x - GRIP)));
+      if (nw !== n.width) { setNodeWidth(n, nw); dragMoved = true; }
       redraw();
     } else if (dragState.type === 'rubberband') {
       dragState.x1=wx; dragState.y1=wy;
@@ -1590,7 +1812,8 @@ function pointerUp(clientX, clientY) {
   if (dragState) {
     if (dragState.type === 'rubberband')
       selNodes = nodesInRect(dragState.x0,dragState.y0,dragState.x1,dragState.y1);
-    else if (dragState.type === 'node' && dragMoved && dragSnap) {
+    else if ((dragState.type === 'node' || dragState.type === 'bend' ||
+              dragState.type === 'width') && dragMoved && dragSnap) {
       undoStack.push(dragSnap); if(undoStack.length>100)undoStack.shift(); redoStack=[];
     }
     dragState=null; dragSnap=null;
@@ -1600,7 +1823,7 @@ function pointerUp(clientX, clientY) {
     const {nodeId:srcId, port:srcPort} = connSrc;
     const tgtId = hitNode(wx,wy);
     if (tgtId !== null && tgtId !== srcId) {
-      const tgtPort = bestTgtPort(srcPort, nodes[srcId], nodes[tgtId]);
+      const tgtPort = bestTgtPort(nodes[srcId], nodes[tgtId]);
       pushUndo();
       const created = addArrow(srcId,srcPort,tgtId,tgtPort);
       if (!created) { undoStack.pop(); showModal('Verbindung abgelehnt','Diese Verbindung würde die Flussrichtung verletzen oder einen Zyklus erzeugen.'); }
@@ -1624,14 +1847,32 @@ function pointerUp(clientX, clientY) {
 
 function dblClick(clientX, clientY) {
   const [wx,wy] = worldPt(clientX,clientY);
+
+  // Doppelklick auf einen Knickpunkt entfernt ihn
+  const bend = hitBend(wx,wy);
+  if (bend !== null) { removeBend(selArrow, bend); lastBend = null; return; }
+
+  // Der erste Klick eines Doppelklicks auf einen markierten Pfeil hat gerade
+  // einen Knickpunkt gesetzt – der war nicht gemeint, also zurücknehmen.
+  if (lastBend && Date.now() - lastBend.t < 600 && hitArrow(wx,wy) === lastBend.arrowId) {
+    const a = arrows[lastBend.arrowId];
+    if (a && a.waypoints[lastBend.index]) { a.waypoints.splice(lastBend.index, 1); undoStack.pop(); }
+    lastBend = null;
+  }
+
   const nid = hitNode(wx,wy);
   if (nid !== null) {
     const n = nodes[nid];
     if (n.templateLabel === 'Funktion') { openFunction(n); return; }
     if (UNLABELED.has(shapeOf(n))) return;
     showPrompt('Symbol bearbeiten','Inhalt des Symbols:', n.label, v => {
-      if (v !== null) { pushUndo(); n.label = v.trim() || n.label; fitSize(n); redraw(); }
-    });
+      if (v !== null) {
+        pushUndo();
+        const txt = v.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
+        n.label = txt || n.label;
+        fitSize(n); redraw();
+      }
+    }, true);
     return;
   }
   const aid = hitArrow(wx,wy);
@@ -1643,6 +1884,8 @@ function dblClick(clientX, clientY) {
 }
 
 function rightClick(wx,wy) {
+  const bend = hitBend(wx,wy);
+  if (bend !== null) { removeBend(selArrow, bend); return; }
   const nid = hitNode(wx,wy);
   if (nid !== null) { pushUndo(); removeNode(nid); selNodes.delete(nid); redraw(); return; }
   const aid = hitArrow(wx,wy);
@@ -1651,8 +1894,39 @@ function rightClick(wx,wy) {
 
 function insertBend(aid,wx,wy) {
   const a = arrows[aid]; if (!a) return;
-  pushUndo(); a.waypoints.push([snap(wx),snap(wy)]);
+  const idx = bendInsertIndex(a, wx, wy);
+  pushUndo();
+  a.waypoints.splice(idx, 0, [snap(wx),snap(wy)]);
+  lastBend = {arrowId:aid, index:idx, t:Date.now()};
   selArrow=aid; redraw();
+}
+
+/** An welcher Stelle der Knickpunkt-Liste liegt der angeklickte Abschnitt? */
+function bendInsertIndex(a, wx, wy) {
+  const wps  = a.waypoints || [];
+  const route = arrowRoute(a);
+  if (!route) return wps.length;
+  let best = Infinity, seg = 0;
+  for (let i = 0; i < route.length-1; i++) {
+    const d = distSeg(wx,wy, route[i][0],route[i][1], route[i+1][0],route[i+1][1]);
+    if (d < best) { best = d; seg = i; }
+  }
+  let idx = 0, ri = 0;
+  for (let k = 0; k < wps.length; k++) {
+    while (ri < route.length &&
+           !(Math.abs(route[ri][0]-wps[k][0]) < 0.5 && Math.abs(route[ri][1]-wps[k][1]) < 0.5)) ri++;
+    if (ri > seg) break;
+    idx = k+1; ri++;
+  }
+  return idx;
+}
+
+/** Knickpunkt entfernen (Doppelklick oder Rechtsklick auf den Griff). */
+function removeBend(aid, index) {
+  const a = arrows[aid]; if (!a || !a.waypoints[index]) return;
+  pushUndo();
+  a.waypoints.splice(index, 1);
+  redraw();
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1752,6 +2026,7 @@ function bindEvents() {
     if (cm&&e.key==='c')                        { copySelection();  e.preventDefault(); }
     if (cm&&e.key==='v')                        { pasteSelection(); e.preventDefault(); }
     if (cm&&e.key==='a')                        { selectAll();      e.preventDefault(); }
+    if (cm&&(e.key==='b'||e.key==='B'))         { e.shiftKey ? resetWidth() : equalizeWidth(); e.preventDefault(); }
     if (e.key==='Delete'||e.key==='Backspace')  { deleteSelected(); e.preventDefault(); }
     if (e.key==='Escape')                       { closeFunction();  e.preventDefault(); }
   });
@@ -1836,14 +2111,34 @@ function showModal(title, msg) {
 }
 
 let promptCb = null;
-function showPrompt(title, lbl, def, cb) {
+let promptEl = null;   // aktives Eingabefeld (ein- oder mehrzeilig)
+
+function showPrompt(title, lbl, def, cb, multiline) {
   document.getElementById('prompt-title').textContent = title;
   document.getElementById('prompt-label').textContent = lbl;
   const inp = document.getElementById('prompt-input');
-  inp.value = def;
+  const ta  = document.getElementById('prompt-textarea');
+  promptEl = multiline ? ta : inp;
+  inp.style.display = multiline ? 'none'  : 'block';
+  ta.style.display  = multiline ? 'block' : 'none';
+  document.getElementById('prompt-hint').style.display = multiline ? 'block' : 'none';
+  promptEl.value = def;
   document.getElementById('prompt-modal').style.display = 'flex';
-  setTimeout(() => { inp.focus(); inp.select(); }, 80);
+  setTimeout(() => { promptEl.focus(); promptEl.select(); }, 80);
   promptCb = cb;
+}
+
+/** Zeilenumbruch an der Cursorposition einfügen (Strg/⌘+Enter). */
+function insertNewline(el) {
+  const s = el.selectionStart, t = el.selectionEnd;
+  el.value = el.value.slice(0, s) + '\n' + el.value.slice(t);
+  el.selectionStart = el.selectionEnd = s + 1;
+  el.scrollTop = el.scrollHeight;
+}
+
+function closePrompt(value) {
+  document.getElementById('prompt-modal').style.display = 'none';
+  if (promptCb) { const cb = promptCb; promptCb = null; cb(value); }
 }
 
 function toggleSidebar() {
@@ -1878,6 +2173,7 @@ function init() {
 
   // Toolbar
   document.getElementById('btn-check').addEventListener('click', checkDiagram);
+  document.getElementById('btn-width').addEventListener('click', equalizeWidth);
   document.getElementById('btn-new')  .addEventListener('click', newDiagram);
   document.getElementById('btn-load') .addEventListener('click', loadDiagram);
   document.getElementById('btn-save') .addEventListener('click', saveDiagram);
@@ -1911,22 +2207,25 @@ function init() {
   });
 
   document.getElementById('prompt-ok').addEventListener('click', () => {
-    document.getElementById('prompt-modal').style.display='none';
-    if (promptCb) { const v=document.getElementById('prompt-input').value; promptCb(v); promptCb=null; }
+    closePrompt(promptEl ? promptEl.value : '');
   });
-  document.getElementById('prompt-cancel').addEventListener('click', () => {
-    document.getElementById('prompt-modal').style.display='none';
-    if (promptCb) { promptCb(null); promptCb=null; }
-  });
+  document.getElementById('prompt-cancel').addEventListener('click', () => closePrompt(null));
   document.getElementById('prompt-modal').addEventListener('click', e => {
-    if (e.target===document.getElementById('prompt-modal')) {
-      document.getElementById('prompt-modal').style.display='none';
-      if (promptCb) { promptCb(null); promptCb=null; }
-    }
+    if (e.target===document.getElementById('prompt-modal')) closePrompt(null);
   });
   document.getElementById('prompt-input').addEventListener('keydown', e => {
-    if (e.key==='Enter') document.getElementById('prompt-ok').click();
-    if (e.key==='Escape') document.getElementById('prompt-cancel').click();
+    if (e.key==='Enter')  { e.preventDefault(); closePrompt(promptEl.value); }
+    if (e.key==='Escape') { e.preventDefault(); closePrompt(null); }
+  });
+  // Mehrzeilig: Strg/⌘+Enter bzw. Shift+Enter erzeugt einen Zeilenumbruch,
+  // Enter allein schließt den Dialog.
+  document.getElementById('prompt-textarea').addEventListener('keydown', e => {
+    if (e.key==='Escape') { e.preventDefault(); closePrompt(null); return; }
+    if (e.key!=='Enter') return;
+    if (e.shiftKey) return;                 // Shift+Enter: Standardverhalten (Umbruch)
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) { insertNewline(e.target); return; }
+    closePrompt(promptEl.value);
   });
 
   // Sidebar overlay (iPad: Klick außerhalb schließt Sidebar)

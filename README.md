@@ -5,8 +5,14 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
 ## Funktionen
 
 - Bausteine aus dem Ordner `Bilder/` per Drag and Drop auf die Flaeche ziehen
-- Inhalte per Doppelklick aendern
-- Pfeile per Maus zwischen Symbolen ziehen
+- Inhalte per Doppelklick aendern, mehrzeilig mit Strg/Cmd+Enter (oder Shift+Enter)
+- Blockbreite frei einstellbar: Anfasser rechts unten ziehen, mehrere Bloecke
+  mit "Breite angleichen" (Strg/Cmd+B) auf dieselbe Breite bringen;
+  Strg/Cmd+Shift+B stellt die automatische Breite wieder her
+- Pfeile per Maus zwischen Symbolen ziehen, auch als Ruecksprung zu einem
+  weiter oben liegenden Block (der Pfeil muendet dann immer von oben ein)
+- Knickpunkte: markierten Pfeil anklicken setzt einen Knick, Ziehen verschiebt
+  ihn am Raster, Doppel-/Rechtsklick auf den Knick entfernt ihn
 - Speichern und Laden als JSON
 - Export als PNG und JPG
 - Validierung gegen ungueltige Verbindungen wie Rueckspruenge nach oben oder Zyklen
@@ -33,10 +39,15 @@ Regelgruppen:
 |---|---|
 | A. Grundstruktur | genau ein Start, mindestens ein Stop, Erreichbarkeit, Zusammenhang (`R01`-`R06`) |
 | B. Verbindungen/Grade | keine haengenden Pfeile, Ein-/Ausgangsgrad je Blocktyp, keine Duplikate (`R08`-`R12`) |
-| C. Geometrie | Pfeile unten raus/oben rein, Verzweigungszweige, Kreuzungen, Ueberlappungen (`R14`,`R15`,`R17`-`R19`) |
+| C. Geometrie | Pfeile unten raus/oben rein, Ruecksprung zu einer Schleife (Hinweis), Verzweigungszweige, Kreuzungen, Ueberlappungen (`R14`-`R19`) |
 | D. Kontrollstrukturen | Verzweigung/Schleife sauber geoeffnet und geschlossen, keine leeren Zweige, Endlosschleifen-Heuristik (`R20`,`R22`,`R23`,`R25`,`R26`) |
 | E. Kantenbeschriftung | Ja/Nein an Verzweigungen, sonst nirgends (`R27`,`R28`) |
 | F. Inhalte | Beschriftungspflicht, Bedingung in Verzweigungen, Zuweisung in Anweisungen, gueltige Funktionsreferenz (`R29`-`R31`,`R36`) |
+
+`R16` deckt den von Hand gezeichneten Ruecksprung ab: ein Pfeil von einem
+`Schleife zu`-Block an einen weiter oben liegenden `Schleife`-Block ist
+erlaubt und erzeugt nur einen Hinweis. Jeder andere Pfeil nach oben bleibt
+ein `R17`-Hinweis.
 
 Einige Regeln des allgemeinen Katalogs entfallen bewusst, weil es im Editor
 kein passendes Konzept gibt (siehe Kommentar am Anfang des Regelwerks in
@@ -44,8 +55,6 @@ kein passendes Konzept gibt (siehe Kommentar am Anfang des Regelwerks in
 
 - `R07` Block-IDs sind durch das Datenmodell immer eindeutig.
 - `R13` es gibt keinen eigenstaendigen Seitenverweis-Konnektor.
-- `R16` Schleifen haben keinen gezeichneten Ruecksprungpfeil; die Wiederholung
-  ergibt sich rein aus dem Schleife/Schleife-zu-Paar.
 - `R21` SESE wird nicht separat geprueft, sondern faellt bei einer Verletzung
   der Verschachtelungspruefung (`R20`/`R22`/`R23`) mit auf.
 - `R32` es gibt keinen eigenen Eingabe/Ausgabe-Blocktyp.
