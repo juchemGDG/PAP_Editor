@@ -1,6 +1,7 @@
 ; Inno Setup Skript für den PAP Editor (Windows-Installer)
 ; Erzeugt dist\PAP-Editor-Setup.exe
 ; Aufruf:  iscc packaging\pap_editor.iss   (nach dem PyInstaller-Build)
+; Quelle ist der PyInstaller-Ausgabeordner build\windows\dist\PAP-Editor.
 
 [Setup]
 AppName=PAP Editor
@@ -21,7 +22,7 @@ Name: "de"; MessagesFile: "compiler:Languages\German.isl"
 
 [Files]
 ; der komplette PyInstaller-Ausgabeordner
-Source: "..\dist\PAP-Editor\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+Source: "..\build\windows\dist\PAP-Editor\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\PAP Editor"; Filename: "{app}\PAP-Editor.exe"

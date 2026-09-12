@@ -1,0 +1,5 @@
+# Build-Artefakte der Paketierung (siehe packaging/README.md)
+.build-venv/
+build/linux/
+build/macos/
+build/windows/

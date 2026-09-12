@@ -99,6 +99,11 @@ Fehlt eine Datei, wird der Eintrag im Dialog ausgegraut ("noch nicht
 verfuegbar") – man kann also mit einer Plattform anfangen. Details und die
 Bau-Befehle stehen in `web/static/downloads/README.md` und `packaging/README.md`.
 
+Die Pakete selbst baut man pro Plattform (PyInstaller kann nicht
+cross-kompilieren) oder bequem mit dem GitHub-Actions-Workflow
+**"Pakete bauen"** (`.github/workflows/build-packages.yml`), der macOS-, Windows-
+und Linux-Paket auf GitHubs Runnern erzeugt.
+
 ## Start
 
 ```bash

@@ -14,6 +14,10 @@ Die Dateinamen müssen exakt so lauten (siehe `DOWNLOADS` in
 | Windows | `PAP-Editor-Setup.exe`             | `packaging\build_windows.bat`  |
 | Linux   | `PAP-Editor-linux-x86_64.tar.gz`   | `./packaging/build_linux.sh`   |
 
+Ohne Windows-Rechner liefert der GitHub-Actions-Workflow **„Pakete bauen"**
+(`.github/workflows/build-packages.yml`) alle drei Pakete als Artefakte –
+siehe `packaging/README.md`.
+
 Nach dem Bauen also z. B.:
 
 ```bash
