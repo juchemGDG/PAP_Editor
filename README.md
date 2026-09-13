@@ -76,49 +76,6 @@ kein passendes Konzept gibt (siehe Kommentar am Anfang des Regelwerks in
 4. Beide Implementierungen mit dem gleichen Testdiagramm gegenpruefen, damit
    Desktop- und Web-Version dieselben Meldungen liefern.
 
-## Desktop-Version aus der Web-App herunterladen
-
-Die Web-Version hat den Menuepunkt **"Desktop-Version"**. Er zeigt die aktuelle
-Version an und verlinkt die Pakete des **neuesten GitHub-Releases** – auf dem
-Server muss also nichts mehr von Hand aktualisiert werden. Ablauf:
-
-1. Tag pushen, z. B. `git tag v1.1.0 && git push origin v1.1.0`
-2. Der Workflow "Pakete bauen" erzeugt `.dmg`, `.exe` und `.tar.gz` und haengt
-   sie an das Release `v1.1.0`
-3. Die Web-App zeigt beim naechsten Oeffnen des Dialogs automatisch die neue
-   Version (das Backend cacht die Release-Abfrage 5 Minuten)
-
-Das Backend (`web/app.py`) fragt dazu `api.github.com` ab und leitet den Klick
-auf die Release-Datei weiter:
-
-| Route | Zweck |
-|---|---|
-| `/api/downloads` | Version, Datum und Verfuegbarkeit der drei Pakete als JSON |
-| `/downloads/latest/<macos\|windows\|linux>` | Weiterleitung auf die Datei des neuesten Releases |
-
-Konfiguration ueber Umgebungsvariablen:
-
-```bash
-export PAP_GITHUB_REPO=juchemGDG/PAP_Editor   # Vorgabe
-export PAP_GITHUB_TOKEN=github_pat_...        # nur noetig, wenn das Repo privat ist
-bash web/start_web.sh
-```
-
-**Wichtig:** Ist das Repository *oeffentlich*, braucht es kein Token. Ist es
-*privat* (aktuell der Fall), muss auf dem Server ein Token mit Leserecht auf
-dieses Repository gesetzt sein – es bleibt serverseitig und taucht nie im
-Browser auf; die Besucher laden ueber eine kurzlebige, signierte GitHub-URL.
-
-Als Rueckfallebene liegen die Pakete weiterhin unter `web/static/downloads/`
-(Dateinamen siehe `web/static/downloads/README.md`). Sie werden genutzt, wenn es
-kein Release gibt oder GitHub nicht erreichbar ist. Fehlt ein Paket an beiden
-Stellen, ist der Eintrag im Dialog ausgegraut.
-
-Die Pakete selbst baut man pro Plattform (PyInstaller kann nicht
-cross-kompilieren) oder bequem mit dem GitHub-Actions-Workflow
-**"Pakete bauen"** (`.github/workflows/build-packages.yml`), der macOS-, Windows-
-und Linux-Paket auf GitHubs Runnern erzeugt.
-
 ## Start
 
 ```bash
@@ -126,15 +83,3 @@ bash start_pap.sh
 ```
 
 In VS Code kannst du auch direkt die Aufgabe "Start PAP Editor" ausfuehren oder die Run-Konfiguration "PAP Editor starten" mit F5 starten.
-
-## Abhaengigkeiten
-
-```bash
-/Users/stephan/venvs/standard/bin/python -m pip install -r requirements.txt
-```
-
-Falls du den Python-Interpreter direkt starten willst, nutze den vollstaendigen Pfad mit fuehrendem Slash:
-
-```bash
-/Users/stephan/venvs/standard/bin/python pap_editor.py
-```
