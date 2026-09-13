@@ -274,14 +274,17 @@ function labelPos(route) {
 // Canvas-Setup
 // ════════════════════════════════════════════════════════════
 function setupCanvas() {
-  canvas = document.getElementById('main-canvas');
+  canvas = byId('main-canvas', true);
+  if (!canvas) return false;
   ctx    = canvas.getContext('2d');
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
+  return true;
 }
 
 function resizeCanvas() {
-  const cont = document.getElementById('canvas-container');
+  const cont = byId('canvas-container');
+  if (!cont || !canvas) return;
   const w = cont.clientWidth, h = cont.clientHeight;
   canvas.width  = w * DPR;
   canvas.height = h * DPR;
@@ -912,8 +915,9 @@ function createFunctionScene() {
 
 function updateCtxUI() {
   const crumbs = [...ctxStack.map(c=>c.title), ctxTitle];
-  document.getElementById('breadcrumb').textContent = crumbs.join(' › ');
-  document.getElementById('back-btn').style.display = ctxStack.length ? 'inline-block' : 'none';
+  const bc = byId('breadcrumb'), back = byId('back-btn');
+  if (bc)   bc.textContent = crumbs.join(' › ');
+  if (back) back.style.display = ctxStack.length ? 'inline-block' : 'none';
 }
 
 // ════════════════════════════════════════════════════════════
@@ -2001,7 +2005,7 @@ function bindEvents() {
   }, { passive:false });
 
   // ── Touch: Palette-Drag ───────────────────────────────────
-  document.getElementById('palette').addEventListener('touchstart', e => {
+  on('palette', 'touchstart', e => {
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
     const item = palHit(t.clientX, t.clientY);
@@ -2035,7 +2039,8 @@ function bindEvents() {
 // Palette
 // ════════════════════════════════════════════════════════════
 function buildPalette() {
-  const pal = document.getElementById('palette');
+  const pal = byId('palette', true);
+  if (!pal) return;
   pal.innerHTML = '';
   for (const item of NODE_TYPES) {
     const card = document.createElement('div');
@@ -2096,7 +2101,7 @@ function palHit(clientX, clientY) {
 // ════════════════════════════════════════════════════════════
 // UI-Hilfsfunktionen
 // ════════════════════════════════════════════════════════════
-function setStatus(msg) { document.getElementById('status').textContent = msg; }
+function setStatus(msg) { const el = byId('status'); if (el) el.textContent = msg; }
 
 function updateStatus() {
   const fname = curFile ? curFile.split(/[/\\]/).pop() : 'unbenannt';
@@ -2108,6 +2113,11 @@ function updateStatus() {
 // ab (/api/downloads) und leitet den Klick auf die Datei weiter. Läuft die
 // Seite ohne Backend oder ist GitHub nicht erreichbar, werden die Dateien in
 // web/static/downloads/ angeboten.
+// Ohne Flask-Backend (rein statisches Hosting) wird die GitHub-API direkt aus
+// dem Browser gefragt. Das funktioniert nur, wenn das Repository oeffentlich
+// ist – bei einem privaten Repo braucht es das Backend (Token bleibt dort).
+const GITHUB_REPO = 'juchemGDG/PAP_Editor';   // leer = nur lokale Dateien anbieten
+
 const DOWNLOADS = [
   { key: 'macos',   os: 'macOS',   file: 'PAP-Editor.dmg',                 hint: 'Apple Silicon & Intel · .dmg' },
   { key: 'windows', os: 'Windows', file: 'PAP-Editor-Setup.exe',           hint: 'Installer · .exe' },
@@ -2137,8 +2147,10 @@ function setRow(a, hint, extra, missing) {
 }
 
 function showDownloads() {
-  const list = document.getElementById('download-list');
-  const info = document.getElementById('download-version');
+  const list = byId('download-list');
+  const info = byId('download-version') || { textContent: '' };   // veraltete index.html
+  const box  = byId('download-modal');
+  if (!list || !box) { showModal('Desktop-Version', 'Bitte die Seite neu laden (Strg+F5).'); return; }
   list.innerHTML = '';
   info.textContent = 'Suche neueste Version …';
 
@@ -2149,7 +2161,7 @@ function showDownloads() {
     rows[item.key] = a;
     list.appendChild(a);
   }
-  document.getElementById('download-modal').style.display = 'flex';
+  box.style.display = 'flex';
 
   fetch('api/downloads', { headers: { 'Accept': 'application/json' } })
     .then(r => r.ok ? r.json() : Promise.reject(new Error('kein Backend')))
@@ -2172,40 +2184,89 @@ function showDownloads() {
         info.textContent = data.error ? `Kein GitHub-Release gefunden – ${data.error}` : 'Kein GitHub-Release gefunden.';
       }
     })
-    .catch(() => {
-      // Ohne Backend: nur die lokal abgelegten Dateien prüfen
-      info.textContent = '';
+    .catch(() => githubDirekt(rows, info));   // kein Backend -> GitHub selbst fragen
+}
+
+/**
+ * Statisches Hosting: das neueste Release direkt bei GitHub erfragen.
+ * Klappt nur bei einem oeffentlichen Repository; sonst bleiben die lokalen
+ * Dateien in downloads/ als letzte Stufe.
+ */
+function githubDirekt(rows, info) {
+  const lokal = () => {
+    for (const item of DOWNLOADS) {
+      const a = rows[item.key];
+      a.setAttribute('download', item.file);
+      a.href = 'downloads/' + item.file;
+      fetch('downloads/' + item.file, { method: 'HEAD' }).then(r => {
+        if (!r.ok) { a.removeAttribute('href'); setRow(a, item.hint, '', true); return; }
+        setRow(a, item.hint, humanSize(Number(r.headers.get('content-length'))), false);
+      }).catch(() => { /* offline o. ä.: Link einfach anbieten */ });
+    }
+  };
+
+  if (!GITHUB_REPO) { info.textContent = ''; lokal(); return; }
+
+  info.textContent = 'Suche neueste Version …';
+  fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+        { headers: { 'Accept': 'application/vnd.github+json' } })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+    .then(release => {
+      const assets = {};
+      for (const a of release.assets || []) assets[a.name] = a;
+      let gefunden = 0;
       for (const item of DOWNLOADS) {
+        const a = rows[item.key], asset = assets[item.file];
+        if (!asset) continue;
+        gefunden++;
+        a.href = asset.browser_download_url;
+        a.removeAttribute('download');        // anderer Host: Attribut wirkt ohnehin nicht
+        setRow(a, item.hint, humanSize(asset.size), false);
+      }
+      info.textContent = `Aktuelle Version: ${release.tag_name}` +
+        (release.published_at ? ` (${release.published_at.slice(0,10)})` : '');
+      // Was das Release nicht hat, evtl. lokal vorhanden
+      for (const item of DOWNLOADS) {
+        if (assets[item.file]) continue;
         const a = rows[item.key];
         a.setAttribute('download', item.file);
+        a.href = 'downloads/' + item.file;
         fetch('downloads/' + item.file, { method: 'HEAD' }).then(r => {
           if (!r.ok) { a.removeAttribute('href'); setRow(a, item.hint, '', true); return; }
-          setRow(a, item.hint, humanSize(Number(r.headers.get('content-length'))), false);
-        }).catch(() => { /* offline o. ä.: Link einfach anbieten */ });
+          setRow(a, item.hint, humanSize(Number(r.headers.get('content-length'))) + ' · lokale Kopie', false);
+        }).catch(() => {});
       }
-    });
+      if (!gefunden) info.textContent += ' – keine passenden Dateien am Release';
+    })
+    .catch(() => { info.textContent = ''; lokal(); });
 }
 
 function showModal(title, msg) {
-  document.getElementById('modal-title').textContent = title;
-  document.getElementById('modal-body').textContent  = msg;
-  document.getElementById('modal').style.display     = 'flex';
+  const box = byId('modal'), t = byId('modal-title'), b = byId('modal-body');
+  if (!box || !t || !b) { alert(`${title}\n\n${msg}`); return; }   // Notfallausgabe
+  t.textContent = title; b.textContent = msg; box.style.display = 'flex';
 }
 
 let promptCb = null;
 let promptEl = null;   // aktives Eingabefeld (ein- oder mehrzeilig)
 
 function showPrompt(title, lbl, def, cb, multiline) {
-  document.getElementById('prompt-title').textContent = title;
-  document.getElementById('prompt-label').textContent = lbl;
-  const inp = document.getElementById('prompt-input');
-  const ta  = document.getElementById('prompt-textarea');
+  const box = byId('prompt-modal');
+  const inp = byId('prompt-input');
+  const ta  = byId('prompt-textarea') || inp;          // veraltete index.html
+  if (!box || !inp) {                                   // Notfall: Browserdialog
+    const v = prompt(lbl, def); if (v !== null) cb(v); return;
+  }
+  const t = byId('prompt-title'), l = byId('prompt-label');
+  if (t) t.textContent = title;
+  if (l) l.textContent = lbl;
   promptEl = multiline ? ta : inp;
-  inp.style.display = multiline ? 'none'  : 'block';
-  ta.style.display  = multiline ? 'block' : 'none';
-  document.getElementById('prompt-hint').style.display = multiline ? 'block' : 'none';
+  inp.style.display = (multiline && ta !== inp) ? 'none'  : 'block';
+  if (ta !== inp) ta.style.display = multiline ? 'block' : 'none';
+  const hint = byId('prompt-hint');
+  if (hint) hint.style.display = multiline ? 'block' : 'none';
   promptEl.value = def;
-  document.getElementById('prompt-modal').style.display = 'flex';
+  box.style.display = 'flex';
   setTimeout(() => { promptEl.focus(); promptEl.select(); }, 80);
   promptCb = cb;
 }
@@ -2219,94 +2280,133 @@ function insertNewline(el) {
 }
 
 function closePrompt(value) {
-  document.getElementById('prompt-modal').style.display = 'none';
+  const box = byId('prompt-modal');
+  if (box) box.style.display = 'none';
   if (promptCb) { const cb = promptCb; promptCb = null; cb(value); }
 }
 
 function toggleSidebar() {
-  const sb = document.getElementById('sidebar');
-  sb.classList.toggle('open');
+  const sb = byId('sidebar');
+  if (sb) sb.classList.toggle('open');
   closeMenu();
 }
 
 function toggleMenu() {
-  document.getElementById('menubar').classList.toggle('open');
-  document.getElementById('sidebar').classList.remove('open');
+  const mb = byId('menubar'), sb = byId('sidebar');
+  if (mb) mb.classList.toggle('open');
+  if (sb) sb.classList.remove('open');
 }
 
 function closeMenu() {
-  document.getElementById('menubar').classList.remove('open');
+  const mb = byId('menubar');
+  if (mb) mb.classList.remove('open');
 }
 
 function updateDeleteButton() {
-  const btn = document.getElementById('btn-delete');
-  btn.disabled = !selNodes.size && selArrow === null;
+  const btn = byId('btn-delete');
+  if (btn) btn.disabled = !selNodes.size && selArrow === null;
+}
+
+// ════════════════════════════════════════════════════════════
+// Robustes Verdrahten
+// ════════════════════════════════════════════════════════════
+// Wichtig gegen einen haeufigen Deploy-Fall: liegt im Browser-Cache noch eine
+// aeltere index.html, fehlen darin Elemente, die die neue pap.js erwartet.
+// Frueher ist init() dann an der ersten Stelle gestorben und die Seite blieb
+// leer. Jetzt wird nur der betroffene Knopf uebersprungen und ein Hinweis
+// eingeblendet.
+
+/** Element holen; fehlt es, wird das gemeldet statt zu werfen. */
+function byId(id, pflicht) {
+  const el = document.getElementById(id);
+  if (!el && pflicht) fehlendeElemente.add(id);
+  return el;
+}
+
+const fehlendeElemente = new Set();
+
+/** Ereignis verdrahten, sofern das Element existiert. */
+function on(id, event, handler, options) {
+  const el = byId(id, true);
+  if (el) el.addEventListener(event, handler, options);
+}
+
+/** Sichtbarer Hinweis, wenn HTML und Skript nicht zusammenpassen. */
+function warnungVeralteteSeite() {
+  if (!fehlendeElemente.size) return;
+  console.warn('Fehlende Elemente in index.html:', [...fehlendeElemente].join(', '));
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:999;padding:10px 16px;' +
+    'background:#fef3c7;color:#92400e;font:13px Helvetica,Arial,sans-serif;' +
+    'border-bottom:1px solid #f59e0b;text-align:center';
+  box.textContent = 'Diese Seite wurde aus einer veralteten Zwischenspeicher-Version geladen. ' +
+    'Bitte einmal mit Strg+F5 (Mac: ⌘+Shift+R) neu laden.';
+  document.body.appendChild(box);
 }
 
 // ════════════════════════════════════════════════════════════
 // Init
 // ════════════════════════════════════════════════════════════
 function init() {
-  setupCanvas();
+  if (!setupCanvas()) { warnungVeralteteSeite(); return; }
   buildPalette();
   bindEvents();
   createStartScene();
   updateCtxUI();
 
   // Toolbar
-  document.getElementById('btn-check').addEventListener('click', checkDiagram);
-  document.getElementById('btn-width').addEventListener('click', equalizeWidth);
-  document.getElementById('btn-new')  .addEventListener('click', newDiagram);
-  document.getElementById('btn-load') .addEventListener('click', loadDiagram);
-  document.getElementById('btn-save') .addEventListener('click', saveDiagram);
-  document.getElementById('btn-png')  .addEventListener('click', exportPNG);
-  document.getElementById('btn-jpg')  .addEventListener('click', exportJPG);
-  document.getElementById('btn-svg')  .addEventListener('click', exportSVG);
-  document.getElementById('btn-desktop').addEventListener('click', showDownloads);
-  document.getElementById('back-btn') .addEventListener('click', closeFunction);
-  document.getElementById('sidebar-toggle').addEventListener('click', toggleSidebar);
-  document.getElementById('menu-toggle').addEventListener('click', toggleMenu);
-  document.getElementById('menu-overlay').addEventListener('click', closeMenu);
-  document.getElementById('menubar').addEventListener('click', e => {
+  on('btn-check', 'click', checkDiagram);
+  on('btn-width', 'click', equalizeWidth);
+  on('btn-new', 'click', newDiagram);
+  on('btn-load', 'click', loadDiagram);
+  on('btn-save', 'click', saveDiagram);
+  on('btn-png', 'click', exportPNG);
+  on('btn-jpg', 'click', exportJPG);
+  on('btn-svg', 'click', exportSVG);
+  on('btn-desktop', 'click', showDownloads);
+  on('back-btn', 'click', closeFunction);
+  on('sidebar-toggle', 'click', toggleSidebar);
+  on('menu-toggle', 'click', toggleMenu);
+  on('menu-overlay', 'click', closeMenu);
+  on('menubar', 'click', e => {
     if (e.target.closest('button')) closeMenu();
   });
-  document.getElementById('btn-delete').addEventListener('click', deleteSelected);
+  on('btn-delete', 'click', deleteSelected);
   updateDeleteButton();
 
-  document.getElementById('toggle-grid').addEventListener('change', e => {
+  on('toggle-grid', 'change', e => {
     showGrid = e.target.checked; redraw();
   });
-  document.getElementById('grid-size').addEventListener('change', e => {
+  on('grid-size', 'change', e => {
     const v = parseInt(e.target.value);
     if (v>=10&&v<=200) { gridSize=v; redraw(); }
   });
 
   // Modals
-  document.getElementById('modal-close').addEventListener('click', () => {
-    document.getElementById('modal').style.display='none';
+  on('modal-close', 'click', () => {
+    const m = byId('modal'); if (m) m.style.display='none';
   });
-  document.getElementById('modal').addEventListener('click', e => {
-    if (e.target===document.getElementById('modal')) document.getElementById('modal').style.display='none';
+  on('modal', 'click', e => {
+    if (e.target===byId('modal')) e.target.style.display='none';
   });
 
-  const dlModal = document.getElementById('download-modal');
-  document.getElementById('download-close').addEventListener('click', () => { dlModal.style.display='none'; });
-  dlModal.addEventListener('click', e => { if (e.target===dlModal) dlModal.style.display='none'; });
+  on('download-close', 'click', () => { const m = byId('download-modal'); if (m) m.style.display='none'; });
+  on('download-modal', 'click', e => { if (e.target===byId('download-modal')) e.target.style.display='none'; });
 
-  document.getElementById('prompt-ok').addEventListener('click', () => {
+  on('prompt-ok', 'click', () => {
     closePrompt(promptEl ? promptEl.value : '');
   });
-  document.getElementById('prompt-cancel').addEventListener('click', () => closePrompt(null));
-  document.getElementById('prompt-modal').addEventListener('click', e => {
-    if (e.target===document.getElementById('prompt-modal')) closePrompt(null);
+  on('prompt-cancel', 'click', () => closePrompt(null));
+  on('prompt-modal', 'click', e => {
+    if (e.target===byId('prompt-modal')) closePrompt(null);
   });
-  document.getElementById('prompt-input').addEventListener('keydown', e => {
+  on('prompt-input', 'keydown', e => {
     if (e.key==='Enter')  { e.preventDefault(); closePrompt(promptEl.value); }
     if (e.key==='Escape') { e.preventDefault(); closePrompt(null); }
   });
   // Mehrzeilig: Strg/⌘+Enter bzw. Shift+Enter erzeugt einen Zeilenumbruch,
   // Enter allein schließt den Dialog.
-  document.getElementById('prompt-textarea').addEventListener('keydown', e => {
+  on('prompt-textarea', 'keydown', e => {
     if (e.key==='Escape') { e.preventDefault(); closePrompt(null); return; }
     if (e.key!=='Enter') return;
     if (e.shiftKey) return;                 // Shift+Enter: Standardverhalten (Umbruch)
@@ -2318,10 +2418,11 @@ function init() {
   // Sidebar overlay (iPad: Klick außerhalb schließt Sidebar)
   const ov = document.createElement('div');
   ov.id='sidebar-overlay';
-  document.getElementById('app').appendChild(ov);
-  ov.addEventListener('click', () => document.getElementById('sidebar').classList.remove('open'));
+  (byId('app') || document.body).appendChild(ov);
+  ov.addEventListener('click', () => { const sb = byId('sidebar'); if (sb) sb.classList.remove('open'); });
 
   redraw();
+  warnungVeralteteSeite();
 }
 
 window.addEventListener('DOMContentLoaded', init);
