@@ -140,10 +140,21 @@ jobs:
       - name: An das Release hängen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Dieser Job checkt das Repository nicht aus (er braucht nur die
+          # Artefakte). Ohne Git-Verzeichnis kann die gh-CLI das Repository
+          # nicht selbst ermitteln – deshalb wird es explizit angegeben.
+          REPO: ${{ github.repository }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" release/* --clobber
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG existiert – Dateien werden angehängt."
+            gh release upload "$TAG" release/* --repo "$REPO" --clobber
           else
-            gh release create "$TAG" release/* --title "PAP Editor $TAG" --generate-notes
+            echo "Release $TAG anlegen."
+            gh release create "$TAG" release/* --repo "$REPO" \
+              --title "PAP Editor $TAG" --generate-notes
           fi
+          echo "Dateien am Release:"
+          # nur zur Kontrolle – darf den Job nicht scheitern lassen
+          gh release view "$TAG" --repo "$REPO" --json assets \
+            --jq '.assets[] | "  \(.name)  \(.size) Bytes"' || true
