@@ -60,8 +60,25 @@ deshalb Ubuntu 22.04 (glibc 2.35).
 - Windows: `SetupIconFile`/`icon` in `pap_editor.iss` bzw. `pap_editor.spec` setzen.
 
 ## Auf der Homepage anbieten
-Die drei erzeugten Dateien in den Ordner **`web/static/downloads/`** kopieren –
-der Menüpunkt „Desktop-Version" in der Web-App verlinkt genau dorthin:
+
+**Der bequeme Weg:** einen Tag pushen (`git tag v1.1.0 && git push origin v1.1.0`).
+Der Workflow baut dann nicht nur die drei Pakete, sondern haengt sie auch an das
+GitHub-Release – mit festen Dateinamen ohne Versionsnummer:
+
+```
+PAP-Editor.dmg
+PAP-Editor-Setup.exe
+PAP-Editor-windows-x86_64.zip
+PAP-Editor-linux-x86_64.tar.gz
+```
+
+Der Menüpunkt „Desktop-Version" der Web-App liest das neueste Release über das
+Flask-Backend aus und verlinkt genau diese Dateien. Auf dem Server muss danach
+**nichts** mehr kopiert werden. Ist das Repository privat, braucht der Server ein
+Lese-Token (`PAP_GITHUB_TOKEN`) – Details in der Haupt-`README.md`.
+
+**Der manuelle Weg (Rückfallebene):** die Dateien nach `web/static/downloads/`
+kopieren, dann nutzt die Web-App diese lokalen Kopien:
 
 ```bash
 cp dist/PAP-Editor.dmg                          web/static/downloads/
@@ -69,7 +86,5 @@ cp dist/PAP-Editor-Setup.exe                    web/static/downloads/
 cp dist/PAP-Editor-1.0.0-linux-x86_64.tar.gz    web/static/downloads/PAP-Editor-linux-x86_64.tar.gz
 ```
 
-Die Dateinamen müssen zur Liste `DOWNLOADS` in `web/static/pap.js` passen
-(siehe `web/static/downloads/README.md`). Fehlende Pakete erscheinen im Dialog
-ausgegraut. Das Programm selbst läuft *nicht* im Browser – die Web-Version ist
-ein eigenständiger Editor, die Pakete sind die Desktop-App.
+Das Programm läuft *nicht* im Browser – die Web-Version ist ein eigenständiger
+Editor, die Pakete sind die Desktop-App.

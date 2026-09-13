@@ -3,3 +3,6 @@
 build/linux/
 build/macos/
 build/windows/
+
+# Python-Cache
+__pycache__/

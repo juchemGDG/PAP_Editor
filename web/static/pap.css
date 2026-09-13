@@ -342,6 +342,14 @@ body {
   color: #64748b;
 }
 
+#download-version {
+  font-size: 12px;
+  color: #2563eb;
+  font-weight: 700;
+  margin-bottom: 10px;
+  min-height: 16px;
+}
+
 #download-list {
   display: flex;
   flex-direction: column;

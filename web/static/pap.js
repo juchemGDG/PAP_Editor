@@ -2104,12 +2104,14 @@ function updateStatus() {
 }
 
 // ── Download der Desktop-Version ──────────────────────────────
-// Die Dateien liegen auf dem Server unter  web/static/downloads/
-// und sind damit unter  /downloads/<dateiname>  erreichbar.
+// Die Pakete kommen vom neuesten GitHub-Release; das Flask-Backend fragt es
+// ab (/api/downloads) und leitet den Klick auf die Datei weiter. Läuft die
+// Seite ohne Backend oder ist GitHub nicht erreichbar, werden die Dateien in
+// web/static/downloads/ angeboten.
 const DOWNLOADS = [
-  { os: 'macOS',   file: 'PAP-Editor.dmg',                 hint: 'Apple Silicon & Intel · .dmg' },
-  { os: 'Windows', file: 'PAP-Editor-Setup.exe',           hint: 'Installer · .exe' },
-  { os: 'Linux',   file: 'PAP-Editor-linux-x86_64.tar.gz', hint: 'entpacken & starten · .tar.gz' },
+  { key: 'macos',   os: 'macOS',   file: 'PAP-Editor.dmg',                 hint: 'Apple Silicon & Intel · .dmg' },
+  { key: 'windows', os: 'Windows', file: 'PAP-Editor-Setup.exe',           hint: 'Installer · .exe' },
+  { key: 'linux',   os: 'Linux',   file: 'PAP-Editor-linux-x86_64.tar.gz', hint: 'entpacken & starten · .tar.gz' },
 ];
 
 function humanSize(bytes) {
@@ -2118,32 +2120,70 @@ function humanSize(bytes) {
   return mb >= 1 ? `${mb.toFixed(0)} MB` : `${Math.max(1, Math.round(bytes/1024))} KB`;
 }
 
+/** Eine Zeile im Download-Dialog. */
+function downloadRow(item) {
+  const a = document.createElement('a');
+  a.className = 'download-item';
+  a.innerHTML = '<span class="download-os"></span><span class="download-meta"></span>';
+  a.querySelector('.download-os').textContent   = item.os;
+  a.querySelector('.download-meta').textContent = item.hint;
+  return a;
+}
+
+function setRow(a, hint, extra, missing) {
+  a.classList.toggle('missing', !!missing);
+  a.querySelector('.download-meta').textContent =
+    missing ? 'noch nicht verfügbar' : (extra ? `${hint} · ${extra}` : hint);
+}
+
 function showDownloads() {
   const list = document.getElementById('download-list');
+  const info = document.getElementById('download-version');
   list.innerHTML = '';
-  for (const item of DOWNLOADS) {
-    const url = 'downloads/' + item.file;
-    const a = document.createElement('a');
-    a.className = 'download-item';
-    a.href = url;
-    a.setAttribute('download', item.file);
-    a.innerHTML = `<span class="download-os"></span><span class="download-meta"></span>`;
-    a.querySelector('.download-os').textContent   = item.os;
-    a.querySelector('.download-meta').textContent = item.hint;
-    list.appendChild(a);
+  info.textContent = 'Suche neueste Version …';
 
-    // Fehlende Pakete ausgrauen, vorhandene mit Dateigröße zeigen
-    fetch(url, { method: 'HEAD' }).then(r => {
-      if (!r.ok) {
-        a.classList.add('missing');
-        a.querySelector('.download-meta').textContent = 'noch nicht verfügbar';
-        return;
-      }
-      const size = humanSize(Number(r.headers.get('content-length')));
-      if (size) a.querySelector('.download-meta').textContent = `${item.hint} · ${size}`;
-    }).catch(() => { /* offline o. ä.: Link einfach anbieten */ });
+  const rows = {};
+  for (const item of DOWNLOADS) {
+    const a = downloadRow(item);
+    a.href = 'downloads/' + item.file;       // Vorbelegung, wird gleich ersetzt
+    rows[item.key] = a;
+    list.appendChild(a);
   }
   document.getElementById('download-modal').style.display = 'flex';
+
+  fetch('api/downloads', { headers: { 'Accept': 'application/json' } })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('kein Backend')))
+    .then(data => {
+      for (const file of data.files || []) {
+        const a = rows[file.key]; if (!a) continue;
+        if (file.available) {
+          a.href = file.url;
+          if (file.source === 'github') a.removeAttribute('download');
+          else a.setAttribute('download', file.name);
+          setRow(a, file.hint, [humanSize(file.size), file.source === 'lokal' ? 'lokale Kopie' : ''].filter(Boolean).join(' · '), false);
+        } else {
+          a.removeAttribute('href');
+          setRow(a, file.hint, '', true);
+        }
+      }
+      if (data.version) {
+        info.textContent = `Aktuelle Version: ${data.version}` + (data.published ? ` (${data.published})` : '');
+      } else {
+        info.textContent = data.error ? `Kein GitHub-Release gefunden – ${data.error}` : 'Kein GitHub-Release gefunden.';
+      }
+    })
+    .catch(() => {
+      // Ohne Backend: nur die lokal abgelegten Dateien prüfen
+      info.textContent = '';
+      for (const item of DOWNLOADS) {
+        const a = rows[item.key];
+        a.setAttribute('download', item.file);
+        fetch('downloads/' + item.file, { method: 'HEAD' }).then(r => {
+          if (!r.ok) { a.removeAttribute('href'); setRow(a, item.hint, '', true); return; }
+          setRow(a, item.hint, humanSize(Number(r.headers.get('content-length'))), false);
+        }).catch(() => { /* offline o. ä.: Link einfach anbieten */ });
+      }
+    });
 }
 
 function showModal(title, msg) {

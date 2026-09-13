@@ -78,26 +78,41 @@ kein passendes Konzept gibt (siehe Kommentar am Anfang des Regelwerks in
 
 ## Desktop-Version aus der Web-App herunterladen
 
-Die Web-Version hat den Menuepunkt **"Desktop-Version"**. Er verlinkt auf die
-Installationspakete, die auf dem Server in
+Die Web-Version hat den Menuepunkt **"Desktop-Version"**. Er zeigt die aktuelle
+Version an und verlinkt die Pakete des **neuesten GitHub-Releases** – auf dem
+Server muss also nichts mehr von Hand aktualisiert werden. Ablauf:
 
-```
-web/static/downloads/
-```
+1. Tag pushen, z. B. `git tag v1.1.0 && git push origin v1.1.0`
+2. Der Workflow "Pakete bauen" erzeugt `.dmg`, `.exe` und `.tar.gz` und haengt
+   sie an das Release `v1.1.0`
+3. Die Web-App zeigt beim naechsten Oeffnen des Dialogs automatisch die neue
+   Version (das Backend cacht die Release-Abfrage 5 Minuten)
 
-liegen muessen (Flask liefert `web/static/` unter `/` aus, die Pakete sind also
-unter `http://<server>:5000/downloads/<dateiname>` erreichbar). Erwartete
-Dateinamen:
+Das Backend (`web/app.py`) fragt dazu `api.github.com` ab und leitet den Klick
+auf die Release-Datei weiter:
 
-| Betriebssystem | Dateiname |
+| Route | Zweck |
 |---|---|
-| macOS   | `PAP-Editor.dmg` |
-| Windows | `PAP-Editor-Setup.exe` |
-| Linux   | `PAP-Editor-linux-x86_64.tar.gz` |
+| `/api/downloads` | Version, Datum und Verfuegbarkeit der drei Pakete als JSON |
+| `/downloads/latest/<macos\|windows\|linux>` | Weiterleitung auf die Datei des neuesten Releases |
 
-Fehlt eine Datei, wird der Eintrag im Dialog ausgegraut ("noch nicht
-verfuegbar") – man kann also mit einer Plattform anfangen. Details und die
-Bau-Befehle stehen in `web/static/downloads/README.md` und `packaging/README.md`.
+Konfiguration ueber Umgebungsvariablen:
+
+```bash
+export PAP_GITHUB_REPO=juchemGDG/PAP_Editor   # Vorgabe
+export PAP_GITHUB_TOKEN=github_pat_...        # nur noetig, wenn das Repo privat ist
+bash web/start_web.sh
+```
+
+**Wichtig:** Ist das Repository *oeffentlich*, braucht es kein Token. Ist es
+*privat* (aktuell der Fall), muss auf dem Server ein Token mit Leserecht auf
+dieses Repository gesetzt sein – es bleibt serverseitig und taucht nie im
+Browser auf; die Besucher laden ueber eine kurzlebige, signierte GitHub-URL.
+
+Als Rueckfallebene liegen die Pakete weiterhin unter `web/static/downloads/`
+(Dateinamen siehe `web/static/downloads/README.md`). Sie werden genutzt, wenn es
+kein Release gibt oder GitHub nicht erreichbar ist. Fehlt ein Paket an beiden
+Stellen, ist der Eintrag im Dialog ausgegraut.
 
 Die Pakete selbst baut man pro Plattform (PyInstaller kann nicht
 cross-kompilieren) oder bequem mit dem GitHub-Actions-Workflow

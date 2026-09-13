@@ -2,6 +2,10 @@
 # Startet den PAP-Editor als Web-App im Browser.
 # Auf dem Mac: bash web/start_web.sh
 # Vom iPad: http://<IP-des-Macs>:5000
+#
+# Der Menuepunkt "Desktop-Version" holt die Pakete vom neuesten GitHub-Release.
+# Bei einem privaten Repository vorher ein Lese-Token setzen:
+#   export PAP_GITHUB_TOKEN=github_pat_...
 
 PORT="${1:-5000}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

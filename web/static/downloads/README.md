@@ -1,12 +1,14 @@
 # Ablageort für die Installationspakete der Desktop-Version
 
-Der Menüpunkt **„Desktop-Version"** in der Web-App verlinkt auf die Dateien in
-genau diesem Ordner. Flask liefert `web/static/` unter der Adresse `/` aus, die
-Pakete sind deshalb ohne weitere Konfiguration unter
-`http://<server>:5000/downloads/<dateiname>` erreichbar.
+**Seit der GitHub-Anbindung ist dieser Ordner nur noch die Rückfallebene.**
+Der Menüpunkt „Desktop-Version" in der Web-App fragt über das Flask-Backend
+(`/api/downloads`) das **neueste GitHub-Release** ab und leitet den Klick direkt
+auf die dort angehängte Datei weiter. Die Pakete müssen also nicht mehr von Hand
+auf den Server kopiert werden – ein neues Release genügt.
 
-Die Dateinamen müssen exakt so lauten (siehe `DOWNLOADS` in
-`web/static/pap.js`):
+Gibt es kein Release (oder ist GitHub gerade nicht erreichbar), nimmt die Web-App
+eine Datei aus diesem Ordner, falls sie hier liegt. Die Namen müssen dann exakt
+so lauten:
 
 | Betriebssystem | Dateiname                          | erzeugt durch                 |
 |---|---|---|
@@ -14,22 +16,11 @@ Die Dateinamen müssen exakt so lauten (siehe `DOWNLOADS` in
 | Windows | `PAP-Editor-Setup.exe`             | `packaging\build_windows.bat`  |
 | Linux   | `PAP-Editor-linux-x86_64.tar.gz`   | `./packaging/build_linux.sh`   |
 
-Ohne Windows-Rechner liefert der GitHub-Actions-Workflow **„Pakete bauen"**
-(`.github/workflows/build-packages.yml`) alle drei Pakete als Artefakte –
-siehe `packaging/README.md`.
+Dieselben Namen trägt der Workflow „Pakete bauen" an das Release an – deshalb
+sind sie ohne Versionsnummer, damit die Web-App sie immer findet.
 
-Nach dem Bauen also z. B.:
-
-```bash
-cp dist/PAP-Editor.dmg web/static/downloads/
-```
-
-Der Linux-Build heißt im `dist/`-Ordner `PAP-Editor-1.0.0-linux-x86_64.tar.gz`
-und muss beim Kopieren auf den Namen aus der Tabelle umbenannt werden – oder
-man passt den Namen in `DOWNLOADS` in `web/static/pap.js` an.
-
-Fehlt eine Datei, bleibt der Eintrag im Dialog sichtbar, ist aber ausgegraut
-(„noch nicht verfügbar"). Man kann also mit einer Plattform anfangen.
+Fehlt eine Datei an beiden Stellen, bleibt der Eintrag im Dialog sichtbar, ist
+aber ausgegraut („noch nicht verfügbar").
 
 Die Pakete selbst gehören nicht ins Git-Repository (siehe `.gitignore` in
 diesem Ordner).
