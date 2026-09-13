@@ -24,8 +24,8 @@ jobs:
     name: Windows (.exe)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path build\windows\dist\PAP-Editor\* -DestinationPath dist\PAP-Editor-windows-x86_64.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PAP-Editor-Windows
           path: |
@@ -60,8 +60,8 @@ jobs:
     name: macOS (.dmg)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -78,7 +78,7 @@ jobs:
           mkdir -p dist
           hdiutil create -volname "PAP Editor" -srcfolder build/macos/dist/PAP-Editor.app -ov -format UDZO dist/PAP-Editor.dmg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PAP-Editor-macOS
           path: dist/PAP-Editor.dmg
@@ -88,8 +88,8 @@ jobs:
     # bewusst die ältere LTS: das Ergebnis läuft dann auch auf älteren Distributionen
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -111,7 +111,7 @@ jobs:
           chmod +x build/linux/dist/PAP-Editor/starten.sh
           tar -czf dist/PAP-Editor-1.0.0-linux-x86_64.tar.gz -C build/linux/dist PAP-Editor
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PAP-Editor-Linux
           path: dist/PAP-Editor-1.0.0-linux-x86_64.tar.gz
@@ -124,17 +124,26 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artefakte
 
       - name: Dateien einsammeln (stabile Namen ohne Versionsnummer)
         run: |
           mkdir -p release
-          cp artefakte/PAP-Editor-macOS/PAP-Editor.dmg                       release/
-          cp artefakte/PAP-Editor-Windows/PAP-Editor-Setup.exe              release/
-          cp artefakte/PAP-Editor-Windows/PAP-Editor-windows-x86_64.zip     release/
-          cp artefakte/PAP-Editor-Linux/PAP-Editor-*-linux-x86_64.tar.gz    release/PAP-Editor-linux-x86_64.tar.gz
+          # Gesucht statt fest verdrahtet: so bleibt der Schritt heil, falls
+          # actions/download-artifact die Ordnerstruktur einmal aendert.
+          hole() {   # $1 = Suchmuster, $2 = Zielname am Release
+            treffer="$(find artefakte -type f -name "$1" | head -1)"
+            if [ -z "$treffer" ]; then
+              echo "::error::Artefakt $1 nicht gefunden"; return 1
+            fi
+            cp "$treffer" "release/$2"
+          }
+          hole 'PAP-Editor.dmg'                   'PAP-Editor.dmg'
+          hole 'PAP-Editor-Setup.exe'             'PAP-Editor-Setup.exe'
+          hole 'PAP-Editor-windows-x86_64.zip'    'PAP-Editor-windows-x86_64.zip'
+          hole 'PAP-Editor-*linux-x86_64.tar.gz'  'PAP-Editor-linux-x86_64.tar.gz'
           ls -lh release
 
       - name: An das Release hängen
