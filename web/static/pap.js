@@ -106,6 +106,7 @@ let touchPan   = null;   // { cx, cy, panX, panY }
 let lastTapT   = 0;
 let lastTapX   = 0;
 let lastTapY   = 0;
+let longPressT = null;   // Timer für langes Tippen (= Rechtsklick auf Touch)
 
 // Canvas
 let canvas, ctx;
@@ -1710,7 +1711,7 @@ function downloadBlob(blob, name) {
 function pointerDown(clientX, clientY, shift, btn) {
   const [wx,wy] = worldPt(clientX, clientY);
 
-  if (btn === 2) { rightClick(wx,wy); return; }
+  if (btn === 2) { rightClick(wx,wy,clientX,clientY); return; }
 
   // Knickpunkt des markierten Pfeils verschieben
   const bend = hitBend(wx,wy);
@@ -1866,7 +1867,6 @@ function dblClick(clientX, clientY) {
   const nid = hitNode(wx,wy);
   if (nid !== null) {
     const n = nodes[nid];
-    if (n.templateLabel === 'Funktion') { openFunction(n); return; }
     if (UNLABELED.has(shapeOf(n))) return;
     showPrompt('Symbol bearbeiten','Inhalt des Symbols:', n.label, v => {
       if (v !== null) {
@@ -1886,13 +1886,72 @@ function dblClick(clientX, clientY) {
   }
 }
 
-function rightClick(wx,wy) {
+function rightClick(wx,wy,clientX,clientY) {
   const bend = hitBend(wx,wy);
   if (bend !== null) { removeBend(selArrow, bend); return; }
   const nid = hitNode(wx,wy);
-  if (nid !== null) { pushUndo(); removeNode(nid); selNodes.delete(nid); redraw(); return; }
+  if (nid !== null) {
+    const n = nodes[nid];
+    // Funktionsblöcke fragen nach: Der Doppelklick bearbeitet wie überall den
+    // Text, in den Unterablaufplan führt nur noch dieses Menü.
+    if (n.templateLabel === 'Funktion') {
+      selNodes = new Set([nid]); selArrow = null; redraw();
+      showCtxMenu(clientX, clientY, [
+        {label:'Funktion öffnen …', action:() => openFunction(n)},
+        {label:'Löschen', danger:true,
+         action:() => { pushUndo(); removeNode(nid); selNodes.delete(nid); redraw(); }},
+      ]);
+      return;
+    }
+    pushUndo(); removeNode(nid); selNodes.delete(nid); redraw(); return;
+  }
   const aid = hitArrow(wx,wy);
   if (aid !== null) insertBend(aid,wx,wy);
+}
+
+// ── Kontextmenü ─────────────────────────────────────────────
+let ctxMenuEl = null;
+
+function closeCtxMenu() {
+  if (ctxMenuEl) { ctxMenuEl.remove(); ctxMenuEl = null; }
+}
+
+/** Kleines Menü an der Zeigerposition; items = [{label, action, danger}]. */
+function showCtxMenu(clientX, clientY, items) {
+  closeCtxMenu();
+  const box = document.createElement('div');
+  box.id = 'ctx-menu';
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.className = 'ctx-item' + (it.danger ? ' danger' : '');
+    b.textContent = it.label;
+    b.addEventListener('click', ev => { ev.preventDefault(); closeCtxMenu(); it.action(); });
+    box.appendChild(b);
+  }
+  document.body.appendChild(box);
+  // Menü in den sichtbaren Bereich schieben
+  const x = Math.max(4, Math.min(clientX, window.innerWidth  - box.offsetWidth  - 4));
+  const y = Math.max(4, Math.min(clientY, window.innerHeight - box.offsetHeight - 4));
+  box.style.left = x + 'px';
+  box.style.top  = y + 'px';
+  ctxMenuEl = box;
+}
+
+/** Langes Tippen ersetzt auf Touch-Geräten den Rechtsklick. */
+function startLongPress(clientX, clientY) {
+  cancelLongPress();
+  longPressT = setTimeout(() => {
+    longPressT = null;
+    const [wx,wy] = worldPt(clientX, clientY);
+    const nid = hitNode(wx,wy);
+    if (nid === null || nodes[nid].templateLabel !== 'Funktion') return;
+    dragState = null; dragSnap = null; connSrc = null; tempTarget = null;
+    rightClick(wx, wy, clientX, clientY);
+  }, 550);
+}
+
+function cancelLongPress() {
+  if (longPressT) { clearTimeout(longPressT); longPressT = null; }
 }
 
 function insertBend(aid,wx,wy) {
@@ -1947,9 +2006,20 @@ function bindEvents() {
   canvas.addEventListener('dblclick',  e => dblClick(e.clientX, e.clientY));
   canvas.addEventListener('contextmenu', e => { e.preventDefault(); });
 
+  // Klick ausserhalb schliesst das Kontextmenü (capture, damit der Canvas-
+  // Handler das Menü danach neu aufbauen kann)
+  document.addEventListener('mousedown', e => {
+    if (ctxMenuEl && !ctxMenuEl.contains(e.target)) closeCtxMenu();
+  }, true);
+  document.addEventListener('touchstart', e => {
+    if (ctxMenuEl && !ctxMenuEl.contains(e.target)) closeCtxMenu();
+  }, true);
+  window.addEventListener('resize', closeCtxMenu);
+
   // Mousewheel / Trackpad → Panning
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
+    closeCtxMenu();
     panX = Math.max(0, panX + e.deltaX);
     panY = Math.max(0, panY + e.deltaY);
     redraw();
@@ -1967,17 +2037,20 @@ function bindEvents() {
       const cy = (e.touches[0].clientY + e.touches[1].clientY)/2;
       touchPan = {cx, cy, panX, panY};
       dragState=null; connSrc=null; tempTarget=null;
+      cancelLongPress();
       e.preventDefault(); return;
     }
     const t = e.touches[0];
     const now = Date.now();
     // Doppel-Tap erkennen
     if (now-lastTapT < 320 && Math.hypot(t.clientX-lastTapX, t.clientY-lastTapY) < 25) {
+      cancelLongPress();
       dblClick(t.clientX, t.clientY);
       lastTapT = 0; e.preventDefault(); return;
     }
     lastTapT=now; lastTapX=t.clientX; lastTapY=t.clientY;
     pointerDown(t.clientX, t.clientY, false, 0);
+    startLongPress(t.clientX, t.clientY);
     e.preventDefault();
   }, { passive:false });
 
@@ -1990,12 +2063,15 @@ function bindEvents() {
       redraw(); e.preventDefault(); return;
     }
     if (e.touches.length === 1 && !touchPan) {
-      pointerMove(e.touches[0].clientX, e.touches[0].clientY);
+      const t = e.touches[0];
+      if (longPressT && Math.hypot(t.clientX-lastTapX, t.clientY-lastTapY) > 12) cancelLongPress();
+      pointerMove(t.clientX, t.clientY);
       e.preventDefault();
     }
   }, { passive:false });
 
   canvas.addEventListener('touchend', e => {
+    cancelLongPress();
     if (touchPan && e.touches.length < 2) { touchPan=null; }
     if (e.touches.length === 0) {
       const t = e.changedTouches[0];
@@ -2031,7 +2107,7 @@ function bindEvents() {
     if (cm&&e.key==='a')                        { selectAll();      e.preventDefault(); }
     if (cm&&(e.key==='b'||e.key==='B'))         { e.shiftKey ? resetWidth() : equalizeWidth(); e.preventDefault(); }
     if (e.key==='Delete'||e.key==='Backspace')  { deleteSelected(); e.preventDefault(); }
-    if (e.key==='Escape')                       { closeFunction();  e.preventDefault(); }
+    if (e.key==='Escape')                       { if (ctxMenuEl) closeCtxMenu(); else closeFunction(); e.preventDefault(); }
   });
 }
 

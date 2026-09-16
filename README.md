@@ -5,7 +5,11 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
 ## Funktionen
 
 - Bausteine aus dem Ordner `Bilder/` per Drag and Drop auf die Flaeche ziehen
-- Inhalte per Doppelklick aendern, mehrzeilig mit Strg/Cmd+Enter (oder Shift+Enter)
+- Inhalte per Doppelklick aendern, mehrzeilig mit Strg/Cmd+Enter (oder Shift+Enter);
+  das gilt auch fuer den Baustein "Funktion"
+- Rechtsklick auf einen "Funktion"-Baustein (auf dem iPad: langes Tippen) oeffnet
+  ein Menue, ueber das sich der Unterablaufplan oeffnen oder der Block loeschen
+  laesst
 - Blockbreite frei einstellbar: Anfasser rechts unten ziehen, mehrere Bloecke
   mit "Breite angleichen" (Strg/Cmd+B) auf dieselbe Breite bringen;
   Strg/Cmd+Shift+B stellt die automatische Breite wieder her. Das gilt fuer

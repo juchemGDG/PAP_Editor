@@ -1117,6 +1117,7 @@ class PapEditor(tk.Tk):
         self.palette_drag_kind: Optional[Tuple[str, str, str]] = None
         self.palette_preview_id: Optional[int] = None
         self.palette_preview_label_id: Optional[int] = None
+        self._context_menu: Optional[tk.Menu] = None    # Kontextmenue eines Funktionsblocks
         self.next_node_id = 1
         self.next_arrow_id = 1
         self.current_file: Optional[str] = None
@@ -1209,7 +1210,8 @@ class PapEditor(tk.Tk):
             text="Mehrfachauswahl: Rahmen ziehen · Shift-Klick\n"
                  "Kopieren ⌘/Strg+C · Einfügen ⌘/Strg+V\n"
                  "SVG kopieren ⌘/Strg+Shift+C · Undo ⌘/Strg+Z\n"
-                 "Funktion: Doppelklick · Zurück: Esc · Löschen: Entf\n"
+                 "Text ändern: Doppelklick · Löschen: Entf\n"
+                 "Funktion öffnen: Rechtsklick · Zurück: Esc\n"
                  "Breite: Griff rechts unten · angleichen ⌘/Strg+B\n"
                  "Text: ⌘/Strg+Enter = Zeilenumbruch\n"
                  "Pfeil-Knick: markierten Pfeil anklicken · Doppelklick löscht",
@@ -1274,6 +1276,9 @@ class PapEditor(tk.Tk):
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
         self.canvas.bind("<Double-Button-1>", self.on_canvas_double_click)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
+        if sys.platform == "darwin":                 # Sekundaerklick auf dem Mac
+            self.canvas.bind("<Button-2>", self.on_canvas_right_click)
+            self.canvas.bind("<Control-Button-1>", self.on_canvas_right_click)
         self.canvas.bind("<Motion>", self.on_canvas_motion)
         self.canvas.bind("<Delete>", self.delete_selected)
         self.canvas.bind("<BackSpace>", self.delete_selected)
@@ -1951,9 +1956,6 @@ class PapEditor(tk.Tk):
         node_id = self._hit_test_node(x, y)
         if node_id:
             node = self.nodes[node_id]
-            if node.template_label == "Funktion":
-                self.open_function(node)
-                return
             if shape_of(node) in UNLABELED_SHAPES:
                 return
             new_label = self._ask_multiline("Symbol bearbeiten", "Inhalt des Symbols:", node.label)
@@ -2029,11 +2031,36 @@ class PapEditor(tk.Tk):
             return
         node_id = self._hit_test_node(x, y)
         if node_id:
+            node = self.nodes[node_id]
+            if node.template_label == "Funktion":
+                self._show_function_menu(node, event)
+                return
             self.delete_node(node_id)
             return
         arrow_id = self._hit_test_arrow(x, y)
         if arrow_id is not None:
             self._edit_arrow_waypoints(arrow_id, x, y)
+
+    def _show_function_menu(self, node: Node, event: tk.Event) -> None:
+        """Kontextmenue eines Funktionsblocks.
+
+        Der Doppelklick bearbeitet wie bei allen anderen Bloecken den Text,
+        deshalb fuehrt nur noch dieses Menue in den Unterablaufplan."""
+        self.selected_node_ids = {node.id}
+        self.selected_arrow_id = None
+        self._redraw()
+
+        if getattr(self, "_context_menu", None) is not None:
+            self._context_menu.destroy()
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Funktion öffnen …", command=lambda: self.open_function(node))
+        menu.add_separator()
+        menu.add_command(label="Löschen", command=lambda: self.delete_node(node.id))
+        self._context_menu = menu
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def on_canvas_motion(self, event: tk.Event) -> None:
         if self.connection_source:
