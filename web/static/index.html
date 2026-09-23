@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0,
         maximum-scale=1.0, user-scalable=no">
   <title>PAP Editor</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <!-- Cache-Buster: bei jedem Deploy hochzählen, sonst liefern Browser/Hosting alte pap.js/pap.css aus -->
-  <link rel="stylesheet" href="pap.css?v=9">
+  <link rel="stylesheet" href="pap.css?v=10">
 </head>
 <body>
 
@@ -30,7 +33,7 @@
       <span class="muted">px</span>
     </div>
 
-    <button id="btn-help-side" class="btn-help-side">? Hilfe &amp; Bedienung</button>
+    <button id="btn-help-side" class="btn-help-side">Hilfe &amp; Bedienung</button>
   </aside>
 
   <!-- ═══════ MAIN ═══════ -->
@@ -54,7 +57,6 @@
         <button id="btn-jpg"   class="btn-menu">JPG export</button>
         <button id="btn-svg"   class="btn-menu">SVG export</button>
         <button id="btn-desktop" class="btn-menu">Desktop-Version</button>
-        <button id="btn-help"  class="btn-menu btn-help">? Hilfe</button>
       </nav>
       <div id="menu-overlay"></div>
 
@@ -177,6 +179,6 @@
   </div>
 </div>
 
-<script src="pap.js?v=9"></script>
+<script src="pap.js?v=10"></script>
 </body>
 </html>

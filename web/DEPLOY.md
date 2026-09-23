@@ -11,6 +11,9 @@ Hochzuladen aus `web/static/`:
 index.html
 pap.js
 pap.css
+favicon.svg
+favicon-32.png
+apple-touch-icon.png
 .htaccess        <- versteckte Datei! im FTP-Programm sichtbar schalten
 ```
 

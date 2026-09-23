@@ -1186,10 +1186,20 @@ class PapEditor(tk.Tk):
         # bei einer mit PyInstaller gepackten App liegen die Ressourcen in sys._MEIPASS
         self.base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 
+        self._set_app_icon()
         self._load_images()
         self._build_ui()
         self._bind_events()
         self._redraw()
+
+    def _set_app_icon(self) -> None:
+        """Logo fuer Fenster und Taskleiste (unter macOS kommt das Dock-Icon aus der .app)."""
+        path = os.path.join(self.base_dir, "assets", "icon.png")
+        try:
+            self._app_icon = tk.PhotoImage(file=path)
+            self.iconphoto(True, self._app_icon)
+        except tk.TclError:
+            pass    # Icon fehlt: Standard-Icon ist kein Beinbruch
 
     def _load_images(self) -> None:
         for label, _, rel in NODE_TYPES:
@@ -1269,15 +1279,12 @@ class PapEditor(tk.Tk):
         style.configure("Accent.TButton", padding=(9, 6), font=("Helvetica", 10, "bold"), relief="flat",
                         background=ACCENT, foreground="#ffffff", borderwidth=0)
         style.map("Accent.TButton", background=[("active", "#4f46e5")])
-        style.configure("Help.TButton", padding=(9, 6), font=("Helvetica", 10, "bold"), relief="flat",
-                        background="#0f766e", foreground="#ffffff", borderwidth=0)
-        style.map("Help.TButton", background=[("active", "#115e59")])
         style.configure("SideHelp.TButton", padding=(10, 9), font=("Helvetica", 12, "bold"), relief="flat",
                         background=PALETTE_CARD, foreground=PALETTE_FG, borderwidth=0)
         style.map("SideHelp.TButton", background=[("active", "#2d3f55")])
 
         # Die fruehere Mini-Beschreibung ist in das Hilfe-Fenster gewandert
-        ttk.Button(self.left, text="?  Hilfe & Bedienung", command=self.show_help,
+        ttk.Button(self.left, text="Hilfe & Bedienung", command=self.show_help,
                    style="SideHelp.TButton").pack(fill="x", padx=16, pady=(4, 16))
 
         # Kopfleiste in zwei Zeilen, damit der Ebenen-Name nie von den Knoepfen
@@ -1311,7 +1318,6 @@ class PapEditor(tk.Tk):
             ("JPG export", self.export_jpg, "Sidebar.TButton"),
             ("SVG kopieren", self.copy_svg, "Sidebar.TButton"),
             ("SVG export", self.export_svg, "Sidebar.TButton"),
-            ("?  Hilfe", self.show_help, "Help.TButton"),
         ]:
             self.menu_buttons.append(ttk.Button(self.menubar, text=text, command=command, style=kind))
         self.menubar.bind("<Configure>", self._layout_menubar)

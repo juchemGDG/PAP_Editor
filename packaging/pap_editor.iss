@@ -5,7 +5,7 @@
 
 [Setup]
 AppName=PAP Editor
-AppVersion=1.0.0
+AppVersion=1.3.1
 AppPublisher=GDG Stuttgart
 DefaultDirName={autopf}\PAP Editor
 DefaultGroupName=PAP Editor
@@ -15,7 +15,8 @@ OutputBaseFilename=PAP-Editor-Setup
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
-; SetupIconFile=icon.ico
+SetupIconFile=..\assets\icon.ico
+UninstallDisplayIcon={app}\PAP-Editor.exe
 
 [Languages]
 Name: "de"; MessagesFile: "compiler:Languages\German.isl"

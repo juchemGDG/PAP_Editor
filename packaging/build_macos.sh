@@ -21,7 +21,7 @@ echo "==> App bauen"
 # deshalb NICHT geleert. PyInstaller arbeitet in build/macos/.
 rm -rf "$WORK"
 mkdir -p "$WORK" dist
-# optional: PAP_ICON=packaging/icon.icns  vor dem Aufruf setzen
+# Icon: assets/icon.icns (automatisch); PAP_ICON=... ueberschreibt es
 pyinstaller pap_editor.spec --distpath "$WORK/dist" --workpath "$WORK/work" --noconfirm
 
 echo "==> DMG erzeugen"

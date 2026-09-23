@@ -1,0 +1,30 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- PAP-Editor-Logo: Mini-Programmablaufplan (Start, Verzweigung, Anweisung)
+       im selben Stil wie MD View / Notenchecker. Quelle für alle Icon-Dateien,
+       erzeugt mit:  python3 packaging/make_icons.py -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF9A3C"/>
+      <stop offset="1" stop-color="#E0561A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- abgerundetes Quadrat mit Rand, wie bei macOS-App-Icons -->
+  <rect x="96" y="96" width="832" height="832" rx="186" fill="url(#bg)"/>
+
+  <g transform="translate(-40 0)" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="30"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- Verbindungen -->
+    <path d="M512 300 V372" fill="none"/>
+    <path d="M512 596 V662" fill="none"/>
+    <path d="M660 484 H748 V740 H672" fill="none"/>
+    <!-- Pfeilspitzen -->
+    <path d="M486 364 L512 396 L538 364 Z" stroke-width="14"/>
+    <path d="M486 654 L512 686 L538 654 Z" stroke-width="14"/>
+    <path d="M680 714 L648 740 L680 766 Z" stroke-width="14"/>
+    <!-- Start (Terminator), Verzweigung (Raute), Anweisung (Rechteck) -->
+    <rect x="392" y="206" width="240" height="94" rx="47" stroke="none"/>
+    <path d="M512 390 L664 484 L512 578 L360 484 Z" stroke-width="16"/>
+    <rect x="388" y="692" width="260" height="104" rx="16" stroke="none"/>
+  </g>
+</svg>

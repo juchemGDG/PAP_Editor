@@ -23,7 +23,7 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
   Vorschau zeigt den Anschluss schon beim Ziehen
 - Schriftgroesse je Block: Bloecke markieren, dann "A−" / "A+" in der
   Menueleiste (wird in der JSON-Datei als `font_size`/`fontSize` gespeichert)
-- Button "Hilfe" (Menueleiste und linke Leiste) oeffnet die komplette Bedienung
+- Button "Hilfe & Bedienung" unten in der linken Leiste oeffnet die komplette Bedienung
   in gut lesbarer Schrift
 - Knickpunkte: markierten Pfeil anklicken setzt einen Knick, Ziehen verschiebt
   ihn am Raster, Doppel-/Rechtsklick auf den Knick entfernt ihn

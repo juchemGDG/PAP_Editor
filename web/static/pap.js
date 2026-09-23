@@ -2505,7 +2505,6 @@ function init() {
   on('btn-width', 'click', equalizeWidth);
   on('btn-font-down', 'click', () => changeFontSize(-1));
   on('btn-font-up', 'click', () => changeFontSize(+1));
-  on('btn-help', 'click', showHelp);
   on('btn-help-side', 'click', showHelp);
   on('help-close', 'click', closeHelp);
   on('help-modal', 'click', e => { if (e.target === byId('help-modal')) closeHelp(); });

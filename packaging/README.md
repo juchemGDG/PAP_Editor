@@ -55,9 +55,12 @@ Auf einer möglichst **alten** Distribution bauen → beste glibc-Kompatibilitä
 ein auf Ubuntu 24.04 gebautes Paket braucht glibc ≥ 2.39, der CI-Job nutzt
 deshalb Ubuntu 22.04 (glibc 2.35).
 
-## Icon (optional)
-- macOS/Linux: `PAP_ICON=packaging/icon.icns ./packaging/build_macos.sh`
-- Windows: `SetupIconFile`/`icon` in `pap_editor.iss` bzw. `pap_editor.spec` setzen.
+## Icon
+- Das Logo liegt in `assets/` (`icon.svg` ist die Quelle). `pap_editor.spec` und
+  `pap_editor.iss` verwenden `assets/icon.icns` bzw. `assets/icon.ico` automatisch.
+- Nach einer Aenderung an `assets/icon.svg`: `python3 packaging/make_icons.py`
+  (erzeugt `.png`, `.ico`, `.icns` sowie Favicons in `web/static/`).
+- Ein anderes Icon nur fuer einen Build: `PAP_ICON=pfad/zum/icon ./packaging/build_macos.sh`
 
 ## Auf der Homepage anbieten
 
