@@ -102,8 +102,9 @@ PORT_RADIUS = 6
 SELECTION_MARGIN = 8
 GRID_SIZE = 40
 
-NODE_FONT = ("Helvetica", 11, "bold")
-LINE_H = 14           # Zeilenhöhe im Blocktext
+FONT_SIZE = 11        # Standard-Schriftgroesse im Block
+FONT_MIN = 7
+FONT_MAX = 36
 MIN_NODE_W = 60       # kleinste manuell einstellbare Blockbreite
 GRIP = 6              # halbe Kantenlänge des Breiten-Anfassers
 BEND_RADIUS = 5       # Radius der Knickpunkt-Anfasser
@@ -150,6 +151,16 @@ def loop_end_points(x: float, y: float, w: float, h: float) -> List[float]:
 
 
 PORT_NORMAL = {"top": (0, -1), "bottom": (0, 1), "left": (-1, 0), "right": (1, 0)}
+
+
+def node_font(node: "Node") -> Tuple[str, int, str]:
+    """Schrift eines Blocks – einstellbar ueber „A−“/„A+“ (Feld font_size)."""
+    return ("Helvetica", node.font_size or FONT_SIZE, "bold")
+
+
+def line_height(node: "Node") -> int:
+    """Zeilenhoehe passend zur Schriftgroesse (11 → 14 wie bisher)."""
+    return round((node.font_size or FONT_SIZE) * 14 / 11)
 
 
 def wrap_lines(measure, text: str, max_w: float) -> List[str]:
@@ -240,6 +251,12 @@ def orthogonal_points(start: Tuple[float, float], source_port: str,
                 pts += [(ax, mid), (bx, mid), end]
             else:
                 mid = (ax + bx) / 2
+                # rechts raus und rechts wieder rein (leerer Zweig): aussen herum,
+                # sonst liefe die senkrechte Linie mitten durch die Raute
+                if source_port == target_port == "right":
+                    mid = max(ax, bx) + APPROACH
+                elif source_port == target_port == "left":
+                    mid = min(ax, bx) - APPROACH
                 pts += [(mid, ay), (mid, by), end]
         elif s_axis == "v":  # leave top/bottom, enter a side port
             pts += [(ax, by), end]
@@ -287,7 +304,7 @@ def paint_node(canvas: tk.Canvas, node: "Node", outline: str, width: int, hole_b
         canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=width)
     if shape not in UNLABELED_SHAPES:
         # Tk bricht selbst an \n und – dank width – zusaetzlich an Wortgrenzen um
-        canvas.create_text(x, y, text=node.label, fill=TEXT_COLOR, font=NODE_FONT, width=w - 18)
+        canvas.create_text(x, y, text=node.label, fill=TEXT_COLOR, font=node_font(node), width=w - 18)
 
 
 @dataclass
@@ -304,6 +321,7 @@ class Node:
     subdiagram: str = ""
     text_anchor: str = "center"
     manual_width: bool = False      # True: Breite wurde von Hand gesetzt und waechst nicht mehr mit
+    font_size: int = FONT_SIZE      # Schriftgroesse des Blocktexts
 
     def bbox(self) -> Tuple[float, float, float, float]:
         return (self.x - self.width / 2, self.y - self.height / 2, self.x + self.width / 2, self.y + self.height / 2)
@@ -1090,6 +1108,41 @@ RULES: Dict[str, Tuple[str, str]] = {
 }
 
 
+# Inhalt des Hilfe-Fensters (Web-Version: Abschnitt #help-modal in web/static/index.html)
+HELP_TEXT: List[Tuple[str, str]] = [
+    ("title", "Hilfe & Bedienung"),
+    ("h", "Bausteine"),
+    ("li", "Baustein aus der linken Leiste auf die Fläche ziehen – oder in der Leiste doppelklicken, dann erscheint er in der Mitte."),
+    ("li", "Text ändern: Doppelklick auf den Baustein."),
+    ("li", "Zeilenumbruch im Text: ⌘/Strg+Enter oder Shift+Enter. Enter allein bestätigt."),
+    ("li", "Schriftgröße: Blöcke markieren, dann „A−“ / „A+“ in der Menüleiste. Für alle Blöcke vorher ⌘/Strg+A."),
+    ("li", "Breite: Block markieren und den Griff rechts unten ziehen. Mehrere Blöcke auf gleiche Breite: "
+           "markieren und „Breite angleichen“ bzw. ⌘/Strg+B. Automatische Breite: ⌘/Strg+Shift+B."),
+    ("h", "Pfeile"),
+    ("li", "Pfeil zeichnen: an einem blauen Anschlusspunkt anfassen und auf den Zielblock ziehen."),
+    ("li", "Verzweigung schließen: Der rechte Zweig mündet von rechts in „Verzweigung zu“ – auch ein leerer Zweig "
+           "direkt aus der Raute. Beim Loslassen auf dem rechten bzw. oberen Anschlusspunkt wird genau dieser verwendet."),
+    ("li", "Knickpunkt: markierten Pfeil noch einmal anklicken setzt einen Knick, Ziehen verschiebt ihn, "
+           "Doppelklick oder Rechtsklick entfernt ihn."),
+    ("li", "Beschriften (z. B. Ja/Nein): Doppelklick auf den Pfeil."),
+    ("li", "Rücksprung zu einer Schleife weiter oben ist erlaubt; der Pfeil mündet dann von oben ein."),
+    ("h", "Auswählen & Bearbeiten"),
+    ("li", "Mehrfachauswahl: Rahmen aufziehen oder Shift-Klick."),
+    ("li", "Kopieren ⌘/Strg+C · Einfügen ⌘/Strg+V · Alles markieren ⌘/Strg+A · SVG kopieren ⌘/Strg+Shift+C"),
+    ("li", "Rückgängig ⌘/Strg+Z · Wiederholen ⌘/Strg+Y"),
+    ("li", "Löschen: Entf / Rückschritt-Taste."),
+    ("h", "Funktionen (Unterprogramme)"),
+    ("li", "Rechtsklick auf einen Funktionsblock → „Funktion öffnen …“."),
+    ("li", "Oben links steht, wo du gerade bist (z. B. „Hauptprogramm › Funktion: berechne“). "
+           "Zurück mit „← Zurück“ oder Esc."),
+    ("h", "Prüfen, Speichern, Export"),
+    ("li", "„Diagramm prüfen“ kontrolliert den Plan nach den PAP-Regeln (DIN 66001) und markiert die betroffenen Blöcke."),
+    ("li", "Speichern/Laden als JSON-Datei – kompatibel mit der Web-Version."),
+    ("li", "Export als PNG, JPG oder SVG."),
+    ("li", "Raster ein/aus und Rasterweite unten in der linken Leiste."),
+]
+
+
 class PapEditor(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -1097,7 +1150,7 @@ class PapEditor(tk.Tk):
         self.geometry("1400x900")
         self.minsize(1180, 760)
 
-        self._node_font = tkfont.Font(family=NODE_FONT[0], size=NODE_FONT[1], weight=NODE_FONT[2])
+        self._node_fonts: Dict[int, tkfont.Font] = {}    # Messschriften je Schriftgroesse
 
         self.nodes: Dict[int, Node] = {}
         self.arrows: Dict[int, Arrow] = {}
@@ -1205,20 +1258,6 @@ class PapEditor(tk.Tk):
         ).pack(side="right")
         tk.Label(grid_frame, text="px", bg=SIDEBAR_BG, fg=PALETTE_MUTED, font=("Helvetica", 9)).pack(side="right", padx=(0, 4))
 
-        hint = tk.Label(
-            self.left,
-            text="Mehrfachauswahl: Rahmen ziehen · Shift-Klick\n"
-                 "Kopieren ⌘/Strg+C · Einfügen ⌘/Strg+V\n"
-                 "SVG kopieren ⌘/Strg+Shift+C · Undo ⌘/Strg+Z\n"
-                 "Text ändern: Doppelklick · Löschen: Entf\n"
-                 "Funktion öffnen: Rechtsklick · Zurück: Esc\n"
-                 "Breite: Griff rechts unten · angleichen ⌘/Strg+B\n"
-                 "Text: ⌘/Strg+Enter = Zeilenumbruch\n"
-                 "Pfeil-Knick: markierten Pfeil anklicken · Doppelklick löscht",
-            bg=SIDEBAR_BG, fg=PALETTE_MUTED, justify="left", font=("Helvetica", 8),
-        )
-        hint.pack(anchor="w", padx=16, pady=(0, 12))
-
         style = ttk.Style(self)
         try:
             style.theme_use("clam")
@@ -1230,22 +1269,41 @@ class PapEditor(tk.Tk):
         style.configure("Accent.TButton", padding=(9, 6), font=("Helvetica", 10, "bold"), relief="flat",
                         background=ACCENT, foreground="#ffffff", borderwidth=0)
         style.map("Accent.TButton", background=[("active", "#4f46e5")])
+        style.configure("Help.TButton", padding=(9, 6), font=("Helvetica", 10, "bold"), relief="flat",
+                        background="#0f766e", foreground="#ffffff", borderwidth=0)
+        style.map("Help.TButton", background=[("active", "#115e59")])
+        style.configure("SideHelp.TButton", padding=(10, 9), font=("Helvetica", 12, "bold"), relief="flat",
+                        background=PALETTE_CARD, foreground=PALETTE_FG, borderwidth=0)
+        style.map("SideHelp.TButton", background=[("active", "#2d3f55")])
 
-        # Kopfleiste: Zurück-Button · Breadcrumb (wächst) · Aktionen-Menüleiste · Status
+        # Die fruehere Mini-Beschreibung ist in das Hilfe-Fenster gewandert
+        ttk.Button(self.left, text="?  Hilfe & Bedienung", command=self.show_help,
+                   style="SideHelp.TButton").pack(fill="x", padx=16, pady=(4, 16))
+
+        # Kopfleiste in zwei Zeilen, damit der Ebenen-Name nie von den Knoepfen
+        # verdraengt wird:  Zurück · Hauptprogramm/Funktion (wächst) · Status
+        #                   Menüleiste (bricht bei schmalem Fenster um)
         topbar = tk.Frame(self.right, bg=STATUS_BG)
         topbar.grid(row=0, column=0, columnspan=2, sticky="ew")
         topbar.columnconfigure(1, weight=1)
 
         self.back_button = ttk.Button(topbar, text="← Zurück", command=self.close_function, style="Sidebar.TButton")
         self.breadcrumb = tk.StringVar(value=self.context_title)
-        tk.Label(topbar, textvariable=self.breadcrumb, bg=STATUS_BG, fg="#0f172a",
-                 padx=12, pady=5, font=("Helvetica", 11, "bold")).grid(row=0, column=1, sticky="w")
+        tk.Label(topbar, textvariable=self.breadcrumb, bg=STATUS_BG, fg="#0f172a", anchor="w",
+                 padx=12, pady=5, font=("Helvetica", 14, "bold")).grid(row=0, column=1, sticky="ew")
 
-        menubar = tk.Frame(topbar, bg=STATUS_BG)
-        menubar.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        self.status = tk.StringVar(value="Bereit")
+        tk.Label(topbar, textvariable=self.status, anchor="e", bg=STATUS_BG, fg="#475569",
+                 padx=12, pady=5, font=("Helvetica", 10)).grid(row=0, column=2, sticky="e")
+
+        self.menubar = tk.Frame(topbar, bg=STATUS_BG)
+        self.menubar.grid(row=1, column=0, columnspan=3, sticky="ew", padx=(8, 8), pady=(0, 4))
+        self.menu_buttons: List[ttk.Button] = []
         for text, command, kind in [
             ("Diagramm prüfen", self.check_diagram, "Accent.TButton"),
             ("Breite angleichen", self.equalize_width, "Sidebar.TButton"),
+            ("A−", lambda: self.change_font_size(-1), "Sidebar.TButton"),
+            ("A+", lambda: self.change_font_size(+1), "Sidebar.TButton"),
             ("Neu", self.new_diagram, "Sidebar.TButton"),
             ("Laden", self.load_diagram, "Sidebar.TButton"),
             ("Speichern", self.save_diagram, "Sidebar.TButton"),
@@ -1253,12 +1311,11 @@ class PapEditor(tk.Tk):
             ("JPG export", self.export_jpg, "Sidebar.TButton"),
             ("SVG kopieren", self.copy_svg, "Sidebar.TButton"),
             ("SVG export", self.export_svg, "Sidebar.TButton"),
+            ("?  Hilfe", self.show_help, "Help.TButton"),
         ]:
-            ttk.Button(menubar, text=text, command=command, style=kind).pack(side="left", padx=(0, 4), pady=4)
-
-        self.status = tk.StringVar(value="Bereit")
-        tk.Label(topbar, textvariable=self.status, anchor="e", bg=STATUS_BG, fg="#475569",
-                 padx=12, pady=5, font=("Helvetica", 10)).grid(row=0, column=3, sticky="e")
+            self.menu_buttons.append(ttk.Button(self.menubar, text=text, command=command, style=kind))
+        self.menubar.bind("<Configure>", self._layout_menubar)
+        self._menubar_width = 0
 
         self.canvas = tk.Canvas(self.right, bg=CANVAS_BG, highlightthickness=0, scrollregion=(0, 0, 5000, 5000))
         self.canvas.grid(row=1, column=0, sticky="nsew")
@@ -1269,6 +1326,62 @@ class PapEditor(tk.Tk):
         ybar.grid(row=1, column=1, sticky="ns")
 
         self._draw_palette()
+
+    def _layout_menubar(self, event: Optional[tk.Event] = None) -> None:
+        """Knoepfe der Menueleiste zeilenweise anordnen (umbrechen wie Text)."""
+        width = event.width if event is not None else self.menubar.winfo_width()
+        if width <= 1 or width == self._menubar_width:
+            return
+        self._menubar_width = width
+        # place statt grid: jede Zeile behaelt die natuerlichen Knopfbreiten
+        x = y = row_h = 0
+        for button in self.menu_buttons:
+            bw, bh = button.winfo_reqwidth(), button.winfo_reqheight()
+            if x and x + bw > width:
+                x, y, row_h = 0, y + row_h + 4, 0
+            button.place(x=x, y=y + 2)
+            x += bw + 4
+            row_h = max(row_h, bh)
+        self.menubar.configure(height=y + row_h + 4)
+
+    def show_help(self) -> None:
+        """Hilfe-Fenster mit der Bedienung in gut lesbarer Schrift."""
+        existing = getattr(self, "_help_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_set()
+            return
+        win = tk.Toplevel(self)
+        win.title("Hilfe & Bedienung – PAP Editor")
+        win.geometry("720x640")
+        win.transient(self)
+        self._help_window = win
+
+        frame = tk.Frame(win, bg="#ffffff")
+        frame.pack(fill="both", expand=True)
+        text = tk.Text(frame, wrap="word", bg="#ffffff", fg="#1e293b", relief="flat",
+                       padx=22, pady=14, font=("Helvetica", 14), spacing1=2, spacing3=4,
+                       highlightthickness=0, cursor="arrow")
+        scroll = tk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        text.tag_configure("title", font=("Helvetica", 20, "bold"), foreground="#0f172a", spacing3=8)
+        text.tag_configure("h", font=("Helvetica", 16, "bold"), foreground=ACCENT, spacing1=14, spacing3=4)
+        text.tag_configure("li", lmargin1=8, lmargin2=26)
+        for kind, content in HELP_TEXT:
+            if kind == "li":
+                text.insert("end", "•  " + content + "\n", "li")
+            else:
+                text.insert("end", content + "\n", kind)
+        text.configure(state="disabled")
+
+        bar = tk.Frame(win, bg="#f1f5f9")
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Schließen", command=win.destroy, style="Accent.TButton").pack(side="right", padx=14, pady=10)
+        win.bind("<Escape>", lambda e: (win.destroy(), "break")[1])
+        win.focus_set()
 
     def _bind_events(self) -> None:
         self.canvas.bind("<Button-1>", self.on_canvas_click)
@@ -1490,8 +1603,15 @@ class PapEditor(tk.Tk):
         if not source:
             return
         start = source.ports()[source_port]
-        points = approach_points(start, [], self.temp_arrow_target, "top")
-        route = orthogonal_points(start, source_port, points, self.temp_arrow_target, "top")
+        # Ueber einem moeglichen Ziel schon am spaeteren Anschluss andocken
+        end, target_port = self.temp_arrow_target, "top"
+        target_id = self._hit_test_node(*self.temp_arrow_target)
+        if target_id and target_id != source_id:
+            target = self.nodes[target_id]
+            target_port = self._best_target_port(source_port, source, target, *self.temp_arrow_target)
+            end = target.ports()[target_port]
+        points = approach_points(start, [], end, target_port)
+        route = orthogonal_points(start, source_port, points, end, target_port)
         flat = [coord for point in route for coord in point]
         self.canvas.create_line(*flat, fill="#7c3aed", width=2, arrow="last", dash=(4, 4))
 
@@ -1505,8 +1625,13 @@ class PapEditor(tk.Tk):
         self.next_node_id += 1
         return node
 
-    def _measure(self, text: str) -> float:
-        return self._node_font.measure(text)
+    def _measurer(self, node: Node):
+        """Messfunktion fuer den Text eines Blocks (abhaengig von seiner Schriftgroesse)."""
+        size = node.font_size or FONT_SIZE
+        font = self._node_fonts.get(size)
+        if font is None:
+            font = self._node_fonts[size] = tkfont.Font(family="Helvetica", size=size, weight="bold")
+        return font.measure
 
     def _fit_node_size(self, node: Node) -> None:
         """Grow the block so its label fits the shape (diamonds taper, connectors are round).
@@ -1520,15 +1645,16 @@ class PapEditor(tk.Tk):
         if shape in UNLABELED_SHAPES:
             return
         label = node.label or ""
+        measure = self._measurer(node)
         if not node.manual_width:
-            text_w = max((self._measure(para) for para in label.split("\n")), default=0) + 24
+            text_w = max((measure(para) for para in label.split("\n")), default=0) + 24
             if shape == "diamond":
                 node.width = max(node.width, self.snap(text_w * 1.7))
             else:
                 node.width = max(node.width, self.snap(text_w))
         node.width = max(MIN_NODE_W, node.width)
-        lines = len(wrap_lines(self._measure, label, max(20, node.width - 18)))
-        need_h = lines * LINE_H + (40 if shape == "diamond" else 22)
+        lines = len(wrap_lines(measure, label, max(20, node.width - 18)))
+        need_h = lines * line_height(node) + (40 if shape == "diamond" else 22)
         node.height = max(88 if shape == "diamond" else NODE_H, need_h)
 
     def set_node_width(self, node: Node, width: float) -> None:
@@ -1565,6 +1691,25 @@ class PapEditor(tk.Tk):
         self._redraw()
         self.status.set(f"{len(selection)} Bloecke auf {int(width)} px Breite gebracht")
         return "break"
+
+    def change_font_size(self, delta: int) -> None:
+        """Schrift der markierten Bloecke vergroessern (+1) / verkleinern (−1)."""
+        nodes = [self.nodes[i] for i in self.selected_node_ids
+                 if i in self.nodes and shape_of(self.nodes[i]) not in UNLABELED_SHAPES]
+        if not nodes:
+            self.status.set("Erst einen oder mehrere Blöcke markieren (alle: ⌘/Strg+A), dann A− / A+.")
+            return
+        self._push_undo()
+        for node in nodes:
+            node.font_size = max(FONT_MIN, min(FONT_MAX, (node.font_size or FONT_SIZE) + delta))
+            # automatische Breite darf beim Verkleinern auch wieder schrumpfen
+            if not node.manual_width:
+                node.width = NODE_W
+            node.height = NODE_H
+            self._fit_node_size(node)
+        self._redraw()
+        sizes = " / ".join(str(s) for s in sorted({n.font_size for n in nodes}))
+        self.status.set(f"Schriftgröße: {sizes} pt ({len(nodes)} Block/Blöcke)")
 
     def reset_width(self, event: Optional[tk.Event] = None) -> str:
         """Automatische Breite wiederherstellen."""
@@ -1858,7 +2003,7 @@ class PapEditor(tk.Tk):
             target_id = self._hit_test_node(x, y)
             if target_id and target_id != source_id:
                 target = self.nodes[target_id]
-                target_port = self._best_target_port(source_port, self.nodes[source_id], target)
+                target_port = self._best_target_port(source_port, self.nodes[source_id], target, x, y)
                 self._push_undo()
                 created = self.add_arrow_between(source_id, source_port, target_id, target_port)
                 if created is None:
@@ -2078,13 +2223,34 @@ class PapEditor(tk.Tk):
         self.temp_arrow_target = (x, y)
         self._redraw()
 
-    def _best_target_port(self, source_port: str, source: Node, target: Node) -> str:
-        # diamonds and the merge connector may also be entered from the right side
+    def _best_target_port(self, source_port: str, source: Node, target: Node,
+                          x: Optional[float] = None, y: Optional[float] = None) -> str:
+        """Ziel-Anschluss fuer einen neuen Pfeil. Verzweigung auf/zu lassen sich
+        auch von rechts erreichen (rechter Zweig, auch ein leerer Zweig direkt aus
+        der Raute). Reihenfolge: Anschluss unter dem Zeiger → Pfeil kommt aus
+        einem seitlichen Anschluss → Quelle liegt rechts vom Ziel → oben belegt.
+        Identisch zu bestTgtPort() in web/static/pap.js."""
         if shape_of(target) not in ("diamond", "connector"):
             return "top"
-        if source.x - target.x > target.width / 2 + 4:   # source clearly to the right
-            return "right"
-        return "top"
+        occupied = self._occupied_ports()
+
+        def free(port: str) -> bool:
+            return (target.id, port) not in occupied
+
+        if x is not None and y is not None:
+            # nur eindeutig: der kleine Verzweigung-zu-Kreis liegt sonst mit dem
+            # Mittelpunkt gleich weit von beiden Anschluessen entfernt
+            ports = target.ports()
+            d_top = math.hypot(ports["top"][0] - x, ports["top"][1] - y)
+            d_right = math.hypot(ports["right"][0] - x, ports["right"][1] - y)
+            if d_right < 14 and d_right + 4 < d_top:
+                return "right"
+            if d_top < 14 and d_top + 4 < d_right:
+                return "top"
+        source_x = source.ports()[source_port][0]
+        if source_port == "right" or source_x > target.x + target.width / 2 + 4:
+            return "right" if free("right") or not free("top") else "top"
+        return "right" if not free("top") and free("right") else "top"
 
     def _insert_bend_point(self, arrow_id: int, x: float, y: float) -> None:
         arrow = self.arrows.get(arrow_id)
@@ -2362,7 +2528,8 @@ class PapEditor(tk.Tk):
         return {key: value for key, value in data.items() if key in allowed}
 
     NODE_KEY_MAP = {"imageRel": "image_rel", "templateLabel": "template_label",
-                    "textAnchor": "text_anchor", "manualWidth": "manual_width"}
+                    "textAnchor": "text_anchor", "manualWidth": "manual_width",
+                    "fontSize": "font_size"}
     ARROW_KEY_MAP = {"sourceId": "source_id", "sourcePort": "source_port",
                      "targetId": "target_id", "targetPort": "target_port"}
 
@@ -2634,13 +2801,14 @@ class PapEditor(tk.Tk):
         else:
             s.append(f'<rect x="{x1}" y="{y1}" width="{w:.0f}" height="{h:.0f}" fill="{fill}" stroke="{border}" stroke-width="2"/>')
         if shape not in UNLABELED_SHAPES and node.label:
-            lines = wrap_lines(self._measure, node.label, max(20, w - 18))
-            start_y = cy - (len(lines) - 1) * LINE_H / 2
+            lh = line_height(node)
+            lines = wrap_lines(self._measurer(node), node.label, max(20, w - 18))
+            start_y = cy - (len(lines) - 1) * lh / 2
             spans = "".join(
-                f'<tspan x="{cx}" y="{start_y + i * LINE_H:.1f}">{escape(line)}</tspan>'
+                f'<tspan x="{cx}" y="{start_y + i * lh:.1f}">{escape(line)}</tspan>'
                 for i, line in enumerate(lines)
             )
-            s.append('<text font-family="Helvetica" font-size="12" font-weight="bold" '
+            s.append(f'<text font-family="Helvetica" font-size="{node.font_size or FONT_SIZE}" font-weight="bold" '
                      f'text-anchor="middle" dominant-baseline="central" fill="{TEXT_COLOR}">{spans}</text>')
         return "\n".join(s)
 
@@ -2649,7 +2817,7 @@ class PapEditor(tk.Tk):
         height = max(1200, int(max((node.y + node.height for node in self.nodes.values()), default=900) + 120))
         image = Image.new("RGBA", (width, height), (248, 250, 252, 255))
         draw = ImageDraw.Draw(image)
-        font = self._load_font(15)
+        fonts: Dict[int, object] = {}
         small_font = self._load_font(12)
         draw.rectangle([0, 0, width, height], fill="#f8fafc")
         for arrow in self.arrows.values():
@@ -2689,7 +2857,9 @@ class PapEditor(tk.Tk):
                 draw.rectangle([x1, y1, x2, y2], fill=fill, outline=border, width=3)
             if shape not in UNLABELED_SHAPES:
                 # gleiche Zeilenaufteilung wie auf der Zeichenflaeche
-                label = "\n".join(wrap_lines(self._measure, node.label, max(20, node.width - 18)))
+                label = "\n".join(wrap_lines(self._measurer(node), node.label, max(20, node.width - 18)))
+                size = round((node.font_size or FONT_SIZE) * 15 / 11)   # Export in hoeherer Aufloesung
+                font = fonts.get(size) or fonts.setdefault(size, self._load_font(size))
                 text_bbox = draw.multiline_textbbox((0, 0), label, font=font, align="center")
                 tw = text_bbox[2] - text_bbox[0]
                 th = text_bbox[3] - text_bbox[1]

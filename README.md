@@ -17,6 +17,14 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
   behaelt seine Form
 - Pfeile per Maus zwischen Symbolen ziehen, auch als Ruecksprung zu einem
   weiter oben liegenden Block (der Pfeil muendet dann immer von oben ein)
+- Verzweigung schliessen: der rechte Zweig muendet von rechts in "Verzweigung zu"
+  – auch ein leerer Zweig direkt aus der Raute. Wird der Pfeil auf dem rechten
+  bzw. oberen Anschlusspunkt losgelassen, wird genau dieser verwendet; die
+  Vorschau zeigt den Anschluss schon beim Ziehen
+- Schriftgroesse je Block: Bloecke markieren, dann "A−" / "A+" in der
+  Menueleiste (wird in der JSON-Datei als `font_size`/`fontSize` gespeichert)
+- Button "Hilfe" (Menueleiste und linke Leiste) oeffnet die komplette Bedienung
+  in gut lesbarer Schrift
 - Knickpunkte: markierten Pfeil anklicken setzt einen Knick, Ziehen verschiebt
   ihn am Raster, Doppel-/Rechtsklick auf den Knick entfernt ihn
 - Speichern und Laden als JSON

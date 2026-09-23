@@ -6,7 +6,7 @@
         maximum-scale=1.0, user-scalable=no">
   <title>PAP Editor</title>
   <!-- Cache-Buster: bei jedem Deploy hochzählen, sonst liefern Browser/Hosting alte pap.js/pap.css aus -->
-  <link rel="stylesheet" href="pap.css?v=8">
+  <link rel="stylesheet" href="pap.css?v=9">
 </head>
 <body>
 
@@ -30,17 +30,7 @@
       <span class="muted">px</span>
     </div>
 
-    <div id="hint-text">
-      Mehrfachauswahl: Rahmen ziehen · Shift-Klick<br>
-      Kopieren Strg/⌘+C · Einfügen Strg/⌘+V<br>
-      Undo Strg/⌘+Z · Löschen: Entf oder 🗑-Button<br>
-      Text ändern: Doppelklick auf den Baustein<br>
-      Funktion öffnen: Rechtsklick (iPad: lang tippen) · Zurück: Esc<br>
-      Breite: Griff rechts unten ziehen · gleiche Breite Strg/⌘+B<br>
-      Text: Strg/⌘+Enter = Zeilenumbruch<br>
-      Pfeil-Knick: markierten Pfeil anklicken · Doppelklick löscht<br>
-      iPad: 2-Finger-Wischen zum Scrollen
-    </div>
+    <button id="btn-help-side" class="btn-help-side">? Hilfe &amp; Bedienung</button>
   </aside>
 
   <!-- ═══════ MAIN ═══════ -->
@@ -48,11 +38,15 @@
     <div id="topbar">
       <button id="sidebar-toggle" title="Bausteine">☰</button>
       <button id="back-btn">← Zurück</button>
-      <span id="breadcrumb">Hauptprogramm</span>
+      <span id="breadcrumb" title="Aktuelle Ebene">Hauptprogramm</span>
 
       <nav id="menubar">
         <button id="btn-check" class="btn-menu btn-accent">Diagramm prüfen</button>
         <button id="btn-width" class="btn-menu">Breite angleichen</button>
+        <span class="btn-group" role="group" aria-label="Schriftgröße">
+          <button id="btn-font-down" class="btn-menu" title="Schrift der markierten Blöcke verkleinern">A−</button>
+          <button id="btn-font-up"   class="btn-menu" title="Schrift der markierten Blöcke vergrößern">A+</button>
+        </span>
         <button id="btn-new"   class="btn-menu">Neu</button>
         <button id="btn-load"  class="btn-menu">Laden</button>
         <button id="btn-save"  class="btn-menu">Speichern</button>
@@ -60,6 +54,7 @@
         <button id="btn-jpg"   class="btn-menu">JPG export</button>
         <button id="btn-svg"   class="btn-menu">SVG export</button>
         <button id="btn-desktop" class="btn-menu">Desktop-Version</button>
+        <button id="btn-help"  class="btn-menu btn-help">? Hilfe</button>
       </nav>
       <div id="menu-overlay"></div>
 
@@ -82,6 +77,64 @@
     <pre id="modal-body"></pre>
     <div style="text-align:right">
       <button id="modal-close">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ HILFE ═══════ -->
+<div id="help-modal">
+  <div id="help-box" role="dialog" aria-labelledby="help-title">
+    <div id="help-head">
+      <h2 id="help-title">Hilfe &amp; Bedienung</h2>
+      <button id="help-close" title="Schließen (Esc)">✕</button>
+    </div>
+    <div id="help-body">
+      <section>
+        <h3>Bausteine</h3>
+        <ul>
+          <li>Baustein aus der linken Leiste auf die Fläche <b>ziehen</b> – oder in der Leiste <b>doppelklicken</b>, dann erscheint er in der Mitte.</li>
+          <li><b>Text ändern:</b> Doppelklick auf den Baustein (iPad: doppelt tippen).</li>
+          <li><b>Zeilenumbruch</b> im Text: <kbd>Strg/⌘</kbd>+<kbd>Enter</kbd> oder <kbd>Shift</kbd>+<kbd>Enter</kbd>. <kbd>Enter</kbd> allein bestätigt.</li>
+          <li><b>Schriftgröße:</b> Blöcke markieren, dann <b>A−</b> / <b>A+</b> in der Menüleiste. Für alle Blöcke vorher <kbd>Strg/⌘</kbd>+<kbd>A</kbd>.</li>
+          <li><b>Breite:</b> Block markieren und den Griff rechts unten ziehen. Mehrere Blöcke auf gleiche Breite: markieren und „Breite angleichen“ bzw. <kbd>Strg/⌘</kbd>+<kbd>B</kbd>. Automatische Breite: <kbd>Strg/⌘</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Pfeile</h3>
+        <ul>
+          <li>Pfeil zeichnen: an einem blauen <b>Anschlusspunkt</b> anfassen und auf den Zielblock ziehen.</li>
+          <li><b>Verzweigung schließen:</b> Der rechte Zweig mündet von rechts in „Verzweigung zu“ – auch ein leerer Zweig direkt aus der Raute. Beim Loslassen auf dem rechten bzw. oberen Anschlusspunkt wird genau dieser verwendet.</li>
+          <li><b>Knickpunkt:</b> markierten Pfeil noch einmal anklicken setzt einen Knick, Ziehen verschiebt ihn, Doppelklick oder Rechtsklick entfernt ihn.</li>
+          <li><b>Beschriften</b> (z. B. Ja/Nein): Doppelklick auf den Pfeil.</li>
+          <li>Rücksprung zu einer Schleife weiter oben ist erlaubt; der Pfeil mündet dann von oben ein.</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Auswählen &amp; Bearbeiten</h3>
+        <ul>
+          <li><b>Mehrfachauswahl:</b> Rahmen aufziehen oder <kbd>Shift</kbd>-Klick.</li>
+          <li>Kopieren <kbd>Strg/⌘</kbd>+<kbd>C</kbd> · Einfügen <kbd>Strg/⌘</kbd>+<kbd>V</kbd> · Alles markieren <kbd>Strg/⌘</kbd>+<kbd>A</kbd></li>
+          <li>Rückgängig <kbd>Strg/⌘</kbd>+<kbd>Z</kbd> · Wiederholen <kbd>Strg/⌘</kbd>+<kbd>Y</kbd></li>
+          <li>Löschen: <kbd>Entf</kbd> / <kbd>⌫</kbd> oder der 🗑-Button.</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Funktionen (Unterprogramme)</h3>
+        <ul>
+          <li><b>Rechtsklick</b> auf einen Funktionsblock (iPad: lange tippen) → „Funktion öffnen …“.</li>
+          <li>Oben links steht, wo du gerade bist (z. B. „Hauptprogramm › Funktion: berechne“). Zurück mit „← Zurück“ oder <kbd>Esc</kbd>.</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Prüfen, Speichern, Export</h3>
+        <ul>
+          <li><b>Diagramm prüfen</b> kontrolliert den Plan nach den PAP-Regeln (DIN 66001) und markiert die betroffenen Blöcke.</li>
+          <li>Speichern/Laden als JSON-Datei – kompatibel mit der Desktop-Version.</li>
+          <li>Export als PNG, JPG oder SVG.</li>
+          <li>Raster ein/aus und Rasterweite unten in der linken Leiste.</li>
+          <li>iPad: mit zwei Fingern wischen, um die Fläche zu verschieben.</li>
+        </ul>
+      </section>
     </div>
   </div>
 </div>
@@ -124,6 +177,6 @@
   </div>
 </div>
 
-<script src="pap.js?v=8"></script>
+<script src="pap.js?v=9"></script>
 </body>
 </html>

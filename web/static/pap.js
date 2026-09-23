@@ -54,8 +54,9 @@ const NODE_H = 44;
 const PORT_R = 6;
 const SEL_MARGIN = 8;
 
-const NODE_FONT  = 'bold 11px Helvetica,Arial,sans-serif';
-const LINE_H     = 14;      // Zeilenhöhe im Blocktext
+const FONT_SIZE  = 11;      // Standard-Schriftgröße im Block (px)
+const FONT_MIN   = 7;
+const FONT_MAX   = 36;
 const MIN_NODE_W = 60;      // kleinste manuell einstellbare Blockbreite
 const GRIP       = 6;       // halbe Kantenlänge des Breiten-Anfassers
 const BEND_R     = 5;       // Radius der Knickpunkt-Anfasser
@@ -140,6 +141,11 @@ function allowedPorts(n) {
   return ps;
 }
 
+/** Schriftgröße eines Blocks – einstellbar über „A−“/„A+“ (Feld fontSize). */
+function fontSizeOf(n) { return (n && n.fontSize) || FONT_SIZE; }
+function nodeFont(n)   { return `bold ${fontSizeOf(n)}px Helvetica,Arial,sans-serif`; }
+function lineH(n)      { return Math.round(fontSizeOf(n) * 14 / 11); }   // 11 px → 14 px wie bisher
+
 // Pfad-Funktionen – nehmen explizit einen Kontext
 function rrPath(c, x1,y1,x2,y2,r) {
   r = Math.max(0, Math.min(r, (x2-x1)/2, (y2-y1)/2));
@@ -199,7 +205,14 @@ function orthoPts(start, srcPort, waypoints, end, tgtPort) {
       pts.push(end);
     } else if (sAx === tAx) {
       if (sAx === 'v') { const m=(ay+by)/2; pts.push([ax,m],[bx,m],end); }
-      else              { const m=(ax+bx)/2; pts.push([m,ay],[m,by],end); }
+      else {
+        // rechts raus und rechts wieder rein (leerer Zweig): außen herum,
+        // sonst liefe die senkrechte Linie mitten durch die Raute
+        let m = (ax+bx)/2;
+        if (srcPort === tgtPort && srcPort === 'right') m = Math.max(ax,bx) + APPROACH;
+        if (srcPort === tgtPort && srcPort === 'left')  m = Math.min(ax,bx) - APPROACH;
+        pts.push([m,ay],[m,by],end);
+      }
     } else if (sAx === 'v') {
       pts.push([ax,by], end);
     } else {
@@ -404,9 +417,9 @@ function drawNode(c, n) {
 
   if (!UNLABELED.has(sh) && n.label) {
     c.fillStyle = TEXT_COLOR;
-    c.font = NODE_FONT;
+    c.font = nodeFont(n);
     c.textAlign = 'center'; c.textBaseline = 'middle';
-    wrapText(c, n.label, x, y, w-18);
+    wrapText(c, n.label, x, y, w-18, lineH(n));
   }
 
   drawPorts(c, n);
@@ -452,17 +465,17 @@ function wrapLines(c, text, maxW) {
 
 /** Messkontext ohne Bildschirmbezug – auch vor dem ersten redraw() nutzbar. */
 let measCanvas = null;
-function measureCtx() {
+function measureCtx(n) {
   if (!measCanvas) measCanvas = document.createElement('canvas');
   const c = measCanvas.getContext('2d');
-  c.font = NODE_FONT;
+  c.font = nodeFont(n);
   return c;
 }
 
-function wrapText(c, text, cx, cy, maxW) {
+function wrapText(c, text, cx, cy, maxW, lh) {
   const lines = wrapLines(c, text, maxW);
-  const startY = cy - (lines.length * LINE_H)/2 + LINE_H/2;
-  for (let i = 0; i < lines.length; i++) c.fillText(lines[i], cx, startY + i*LINE_H);
+  const startY = cy - (lines.length * lh)/2 + lh/2;
+  for (let i = 0; i < lines.length; i++) c.fillText(lines[i], cx, startY + i*lh);
 }
 
 function drawPorts(c, n) {
@@ -532,8 +545,15 @@ function drawTempArrow(c) {
   if (!connSrc || !tempTarget) return;
   const src = nodes[connSrc.nodeId]; if (!src) return;
   const start = ports(src)[connSrc.port];
+  // Über einem möglichen Ziel schon am späteren Anschluss andocken
+  let end = tempTarget, tgtPort = 'top';
+  const tid = hitNode(tempTarget[0], tempTarget[1]);
+  if (tid !== null && tid !== src.id) {
+    tgtPort = bestTgtPort(src, connSrc.port, nodes[tid], tempTarget[0], tempTarget[1]);
+    end = ports(nodes[tid])[tgtPort];
+  }
   const route = orthoPts(start, connSrc.port,
-                         approachPoints(start, [], tempTarget, 'top'), tempTarget, 'top');
+                         approachPoints(start, [], end, tgtPort), end, tgtPort);
   c.strokeStyle = '#7c3aed'; c.fillStyle = '#7c3aed';
   c.lineWidth = 2; c.setLineDash([4,4]);
   c.beginPath();
@@ -642,7 +662,7 @@ function fitSize(n) {
   const sh = shapeOf(n);
   if (sh === 'connector')    { n.width = n.height = 26; return; }
   if (UNLABELED.has(sh))     return;
-  const c = measureCtx();
+  const c = measureCtx(n);
   const label = n.label || '';
 
   if (!n.manualWidth) {
@@ -655,7 +675,7 @@ function fitSize(n) {
   n.width = Math.max(MIN_NODE_W, n.width);
 
   const lines = wrapLines(c, label, Math.max(20, n.width - 18)).length;
-  const needH = lines*LINE_H + (sh === 'diamond' ? 40 : 22);
+  const needH = lines*lineH(n) + (sh === 'diamond' ? 40 : 22);
   n.height = Math.max(sh === 'diamond' ? 88 : NODE_H, needH);
 }
 
@@ -683,6 +703,24 @@ function equalizeWidth() {
   for (const n of list) setNodeWidth(n, w);
   redraw();
   setStatus(`${list.length} Blöcke auf ${Math.round(w)} px Breite gebracht`);
+}
+
+/** Schrift der markierten Blöcke vergrößern (+1) / verkleinern (−1). */
+function changeFontSize(delta) {
+  const list = [...selNodes].map(id => nodes[id]).filter(n => n && !UNLABELED.has(shapeOf(n)));
+  if (!list.length) { setStatus('Erst einen oder mehrere Blöcke markieren (alle: Strg/⌘+A), dann A− / A+.'); return; }
+  pushUndo();
+  for (const n of list) {
+    const fs = Math.max(FONT_MIN, Math.min(FONT_MAX, fontSizeOf(n) + delta));
+    if (fs === FONT_SIZE) delete n.fontSize; else n.fontSize = fs;
+    // automatische Breite darf beim Verkleinern auch wieder schrumpfen
+    if (!n.manualWidth) n.width = NODE_W;
+    n.height = NODE_H;
+    fitSize(n);
+  }
+  redraw();
+  const sizes = [...new Set(list.map(fontSizeOf))];
+  setStatus(`Schriftgröße: ${sizes.join(' / ')} px (${list.length} Block/Blöcke)`);
 }
 
 /** Automatische Breite wiederherstellen. */
@@ -730,11 +768,29 @@ function backJumpWaypoints(s, srcPort, t, tgtPort) {
   return [[snap(s.x), below], [lane, below], [lane, above]];
 }
 
-function bestTgtPort(src, tgt) {
+/**
+ * Ziel-Anschluss für einen neuen Pfeil. Verzweigung auf/zu lassen sich auch
+ * von rechts erreichen (rechter Zweig, auch ein leerer Zweig direkt aus der
+ * Raute). Reihenfolge: Anschluss unter dem Zeiger → Pfeil kommt aus einem
+ * seitlichen Anschluss → Quelle liegt rechts vom Ziel → oben schon belegt.
+ */
+function bestTgtPort(src, srcPort, tgt, wx, wy) {
   const sh = shapeOf(tgt);
   if (sh !== 'diamond' && sh !== 'connector') return 'top';
-  if (src.x - tgt.x > tgt.width/2 + 4) return 'right';
-  return 'top';
+  const occ = occupiedPorts();
+  const free = p => !occ.has(`${tgt.id}:${p}`);
+  if (wx !== undefined) {
+    // nur eindeutig: der kleine Verzweigung-zu-Kreis liegt sonst mit dem
+    // Mittelpunkt gleich weit von beiden Anschlüssen entfernt
+    const ps = ports(tgt);
+    const dTop = Math.hypot(ps.top[0]-wx, ps.top[1]-wy);
+    const dRight = Math.hypot(ps.right[0]-wx, ps.right[1]-wy);
+    if (dRight < 14 && dRight + 4 < dTop) return 'right';
+    if (dTop < 14 && dTop + 4 < dRight) return 'top';
+  }
+  const srcX = ports(src)[srcPort][0];
+  if (srcPort === 'right' || srcX > tgt.x + tgt.width/2 + 4) return free('right') || !free('top') ? 'right' : 'top';
+  return !free('top') && free('right') ? 'right' : 'top';
 }
 
 function removeNode(id) {
@@ -797,7 +853,8 @@ function loadPayload(p) {
     const n = {...item};
     // Kompatibilität desktop ↔ web (snake_case → camelCase)
     for (const [snake, camel] of [['image_rel','imageRel'], ['template_label','templateLabel'],
-                                  ['text_anchor','textAnchor'], ['manual_width','manualWidth']]) {
+                                  ['text_anchor','textAnchor'], ['manual_width','manualWidth'],
+                                  ['font_size','fontSize']]) {
       if (n[snake] !== undefined) { n[camel] = n[snake]; delete n[snake]; }
     }
     nodes[n.id] = n;
@@ -1685,11 +1742,12 @@ function svgNode(n, tx, ty) {
     parts.push(`<rect x="${x1}" y="${y1}" width="${w}" height="${h}" fill="${fill}" stroke="${border}" stroke-width="2"/>`);
   }
   if (!UNLABELED.has(sh) && n.label) {
-    const lines  = wrapLines(measureCtx(), n.label, Math.max(20, w-18));
-    const startY = cy - (lines.length-1)*LINE_H/2;
+    const lh     = lineH(n);
+    const lines  = wrapLines(measureCtx(n), n.label, Math.max(20, w-18));
+    const startY = cy - (lines.length-1)*lh/2;
     const tspans = lines.map((ln,i) =>
-      `<tspan x="${cx}" y="${(startY+i*LINE_H).toFixed(1)}">${xmlEsc(ln)}</tspan>`).join('');
-    parts.push(`<text font-family="Helvetica" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="central" fill="${TEXT_COLOR}">${tspans}</text>`);
+      `<tspan x="${cx}" y="${(startY+i*lh).toFixed(1)}">${xmlEsc(ln)}</tspan>`).join('');
+    parts.push(`<text font-family="Helvetica" font-size="${fontSizeOf(n)}" font-weight="bold" text-anchor="middle" dominant-baseline="central" fill="${TEXT_COLOR}">${tspans}</text>`);
   }
   return parts.join('\n');
 }
@@ -1827,7 +1885,7 @@ function pointerUp(clientX, clientY) {
     const {nodeId:srcId, port:srcPort} = connSrc;
     const tgtId = hitNode(wx,wy);
     if (tgtId !== null && tgtId !== srcId) {
-      const tgtPort = bestTgtPort(nodes[srcId], nodes[tgtId]);
+      const tgtPort = bestTgtPort(nodes[srcId], srcPort, nodes[tgtId], wx, wy);
       pushUndo();
       const created = addArrow(srcId,srcPort,tgtId,tgtPort);
       if (!created) { undoStack.pop(); showModal('Verbindung abgelehnt','Diese Verbindung würde die Flussrichtung verletzen oder einen Zyklus erzeugen.'); }
@@ -2107,7 +2165,10 @@ function bindEvents() {
     if (cm&&e.key==='a')                        { selectAll();      e.preventDefault(); }
     if (cm&&(e.key==='b'||e.key==='B'))         { e.shiftKey ? resetWidth() : equalizeWidth(); e.preventDefault(); }
     if (e.key==='Delete'||e.key==='Backspace')  { deleteSelected(); e.preventDefault(); }
-    if (e.key==='Escape')                       { if (ctxMenuEl) closeCtxMenu(); else closeFunction(); e.preventDefault(); }
+    if (e.key==='Escape')                       {
+      if (ctxMenuEl) closeCtxMenu(); else if (helpOpen()) closeHelp(); else closeFunction();
+      e.preventDefault();
+    }
   });
 }
 
@@ -2317,6 +2378,15 @@ function githubDirekt(rows, info) {
     .catch(() => { info.textContent = ''; lokal(); });
 }
 
+function showHelp() {
+  closeMenu();
+  const sb = byId('sidebar'); if (sb) sb.classList.remove('open');
+  const m = byId('help-modal');
+  if (m) m.style.display = 'flex';
+}
+function closeHelp() { const m = byId('help-modal'); if (m) m.style.display = 'none'; }
+function helpOpen()  { const m = byId('help-modal'); return !!m && m.style.display === 'flex'; }
+
 function showModal(title, msg) {
   const box = byId('modal'), t = byId('modal-title'), b = byId('modal-body');
   if (!box || !t || !b) { alert(`${title}\n\n${msg}`); return; }   // Notfallausgabe
@@ -2433,6 +2503,12 @@ function init() {
   // Toolbar
   on('btn-check', 'click', checkDiagram);
   on('btn-width', 'click', equalizeWidth);
+  on('btn-font-down', 'click', () => changeFontSize(-1));
+  on('btn-font-up', 'click', () => changeFontSize(+1));
+  on('btn-help', 'click', showHelp);
+  on('btn-help-side', 'click', showHelp);
+  on('help-close', 'click', closeHelp);
+  on('help-modal', 'click', e => { if (e.target === byId('help-modal')) closeHelp(); });
   on('btn-new', 'click', newDiagram);
   on('btn-load', 'click', loadDiagram);
   on('btn-save', 'click', saveDiagram);
