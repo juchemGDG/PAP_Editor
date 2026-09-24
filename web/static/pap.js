@@ -1756,14 +1756,18 @@ function xmlEsc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Safari ignoriert je nach Einstellung das download-Attribut und öffnet die
+// Blob-URL als Seite. Mit octet-stream wird die Datei immer heruntergeladen;
+// die URL bleibt eine Minute gültig, sonst endet ein verspätetes Laden in
+// "WebKitBlobResource-Fehler 1".
 function downloadBlob(blob, name) {
-  const url = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(new Blob([blob], {type: 'application/octet-stream'}));
   const a = document.createElement('a');
-  a.href = url; a.download = name; a.style.display = 'none';
+  a.href = url; a.download = name; a.rel = 'noopener'; a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ════════════════════════════════════════════════════════════
