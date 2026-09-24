@@ -63,7 +63,7 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "PAP Editor",
             "CFBundleDisplayName": "PAP Editor",
-            "CFBundleShortVersionString": "1.3.1",
+            "CFBundleShortVersionString": "1.3.2",
             "NSHighResolutionCapable": True,
         },
     )

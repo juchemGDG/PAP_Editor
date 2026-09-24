@@ -5,7 +5,7 @@
 
 [Setup]
 AppName=PAP Editor
-AppVersion=1.3.1
+AppVersion=1.3.2
 AppPublisher=GDG Stuttgart
 DefaultDirName={autopf}\PAP Editor
 DefaultGroupName=PAP Editor

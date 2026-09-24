@@ -1130,7 +1130,7 @@ HELP_TEXT: List[Tuple[str, str]] = [
     ("li", "Mehrfachauswahl: Rahmen aufziehen oder Shift-Klick."),
     ("li", "Kopieren ⌘/Strg+C · Einfügen ⌘/Strg+V · Alles markieren ⌘/Strg+A · SVG kopieren ⌘/Strg+Shift+C"),
     ("li", "Rückgängig ⌘/Strg+Z · Wiederholen ⌘/Strg+Y"),
-    ("li", "Löschen: Entf / Rückschritt-Taste."),
+    ("li", "Löschen: Entf / Rückschritt-Taste oder der 🗑-Button."),
     ("h", "Funktionen (Unterprogramme)"),
     ("li", "Rechtsklick auf einen Funktionsblock → „Funktion öffnen …“."),
     ("li", "Oben links steht, wo du gerade bist (z. B. „Hauptprogramm › Funktion: berechne“). "
@@ -1279,6 +1279,11 @@ class PapEditor(tk.Tk):
         style.configure("Accent.TButton", padding=(9, 6), font=("Helvetica", 10, "bold"), relief="flat",
                         background=ACCENT, foreground="#ffffff", borderwidth=0)
         style.map("Accent.TButton", background=[("active", "#4f46e5")])
+        style.configure("Danger.TButton", padding=(9, 6), font=("Helvetica", 10, "bold"), relief="flat",
+                        background="#dc2626", foreground="#ffffff", borderwidth=0)
+        style.map("Danger.TButton",
+                  background=[("disabled", "#e2e8f0"), ("active", "#b91c1c")],
+                  foreground=[("disabled", "#94a3b8")])
         style.configure("SideHelp.TButton", padding=(10, 9), font=("Helvetica", 12, "bold"), relief="flat",
                         background=PALETTE_CARD, foreground=PALETTE_FG, borderwidth=0)
         style.map("SideHelp.TButton", background=[("active", "#2d3f55")])
@@ -1300,8 +1305,10 @@ class PapEditor(tk.Tk):
                  padx=12, pady=5, font=("Helvetica", 14, "bold")).grid(row=0, column=1, sticky="ew")
 
         self.status = tk.StringVar(value="Bereit")
-        tk.Label(topbar, textvariable=self.status, anchor="e", bg=STATUS_BG, fg="#475569",
-                 padx=12, pady=5, font=("Helvetica", 10)).grid(row=0, column=2, sticky="e")
+        self._status_hold_until = 0.0
+        self.status_label = tk.Label(topbar, textvariable=self.status, anchor="e", bg=STATUS_BG, fg="#475569",
+                                     padx=12, pady=5, font=("Helvetica", 10))
+        self.status_label.grid(row=0, column=2, sticky="e")
 
         self.menubar = tk.Frame(topbar, bg=STATUS_BG)
         self.menubar.grid(row=1, column=0, columnspan=3, sticky="ew", padx=(8, 8), pady=(0, 4))
@@ -1320,6 +1327,9 @@ class PapEditor(tk.Tk):
             ("SVG export", self.export_svg, "Sidebar.TButton"),
         ]:
             self.menu_buttons.append(ttk.Button(self.menubar, text=text, command=command, style=kind))
+        self.delete_button = ttk.Button(self.menubar, text="🗑 Löschen", command=self.delete_selected,
+                                        style="Danger.TButton", state="disabled")
+        self.menu_buttons.append(self.delete_button)
         self.menubar.bind("<Configure>", self._layout_menubar)
         self._menubar_width = 0
 
@@ -1399,8 +1409,9 @@ class PapEditor(tk.Tk):
             self.canvas.bind("<Button-2>", self.on_canvas_right_click)
             self.canvas.bind("<Control-Button-1>", self.on_canvas_right_click)
         self.canvas.bind("<Motion>", self.on_canvas_motion)
-        self.canvas.bind("<Delete>", self.delete_selected)
-        self.canvas.bind("<BackSpace>", self.delete_selected)
+        # bind_all: Buttons und Dialoge ziehen den Fokus vom Canvas weg
+        self.bind_all("<Delete>", self._on_delete_key)
+        self.bind_all("<BackSpace>", self._on_delete_key)
         self.canvas.focus_set()
         self.bind_all("<B1-Motion>", self.on_global_drag, add="+")
         self.bind_all("<ButtonRelease-1>", self.on_global_release, add="+")
@@ -1487,9 +1498,24 @@ class PapEditor(tk.Tk):
         if self.rubber_band:
             x1, y1, x2, y2 = self.rubber_band
             self.canvas.create_rectangle(x1, y1, x2, y2, outline=ACCENT, width=1, dash=(3, 3), fill="")
+        has_selection = bool(self.selected_node_ids) or self.selected_arrow_id is not None
+        self.delete_button.state(["!disabled"] if has_selection else ["disabled"])
         self._update_status()
 
+    def _flash_status(self, message: str, ms: int = 3000) -> None:
+        self._status_hold_until = time.monotonic() + ms / 1000
+        self.status.set(message)
+        self.status_label.configure(fg="#15803d")
+        self.after(ms, self._end_flash)
+
+    def _end_flash(self) -> None:
+        if time.monotonic() >= self._status_hold_until:
+            self.status_label.configure(fg="#475569")
+            self._update_status()
+
     def _update_status(self) -> None:
+        if time.monotonic() < self._status_hold_until:
+            return
         self.status.set(f"Knoten: {len(self.nodes)}   Verbindungen: {len(self.arrows)}   Datei: {os.path.basename(self.current_file) if self.current_file else 'unbenannt'}")
 
     def _draw_node(self, node: Node) -> None:
@@ -2437,6 +2463,14 @@ class PapEditor(tk.Tk):
         self.palette_preview_id = None
         self.palette_preview_label_id = None
 
+    def _on_delete_key(self, event: tk.Event) -> Optional[str]:
+        widget = self.focus_get()
+        if widget is None or widget.winfo_toplevel() is not self:
+            return None
+        if isinstance(widget, (tk.Entry, tk.Text, tk.Spinbox, ttk.Entry, ttk.Spinbox, ttk.Combobox)):
+            return None
+        return self.delete_selected()
+
     def delete_selected(self, event: Optional[tk.Event] = None) -> str:
         if not self.selected_node_ids and self.selected_arrow_id is None:
             return "break"
@@ -2497,8 +2531,12 @@ class PapEditor(tk.Tk):
             if not path:
                 return
             self.current_file = path
-        self._write_json(self.current_file)
-        self._update_status()
+        try:
+            self._write_json(self.current_file)
+        except OSError as err:
+            messagebox.showerror("Speichern fehlgeschlagen", str(err))
+            return
+        self._flash_status(f"✓ Gespeichert: {os.path.basename(self.current_file)}  ({time.strftime('%H:%M:%S')})")
 
     def load_diagram(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("PAP Datei", "*.json")], title="Diagramm laden")
