@@ -647,3 +647,6 @@ kbd {
 @media (min-width: 801px) {
   #sidebar-toggle { display: none; }
 }
+
+/* ── Einbettung (?embed=1): Download-Hinweis auf die Desktop-Version ist dort ueberfluessig ── */
+body.embed #btn-desktop { display: none; }

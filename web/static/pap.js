@@ -883,6 +883,7 @@ function restoreSnap(s)  {
 }
 
 function pushUndo() {
+  embedChanged = true;
   undoStack.push(serialize());
   if (undoStack.length > 100) undoStack.shift();
   redoStack = [];
@@ -2581,6 +2582,88 @@ function init() {
 
   redraw();
   warnungVeralteteSeite();
+  initEmbed();
+}
+
+// ════════════════════════════════════════════════════════════
+// Einbettung in andere Apps (?embed=1), z. B. Projektmanagement
+//
+// Protokoll (window.postMessage, alle Nachrichten sind Objekte):
+//   Editor -> Host:  {source:'pap-editor', event:'ready'}
+//   Host -> Editor:  {target:'pap-editor', action:'load', diagram:<JSON wie "Speichern"|null>, title?:string}
+//   Editor -> Host:  {source:'pap-editor', event:'save', diagram:<JSON>, svg:<SVG-Text>}
+//   Editor -> Host:  {source:'pap-editor', event:'exit'}
+// Der Editor nimmt nur Nachrichten seines Eltern-Fensters an und antwortet
+// ausschliesslich an dessen Origin (aus der load-Nachricht).
+// ════════════════════════════════════════════════════════════
+const EMBED = new URLSearchParams(location.search).get('embed') === '1' && window.parent !== window;
+let embedOrigin  = null;
+let embedChanged = false;
+
+function embedSend(msg, origin) {
+  window.parent.postMessage(Object.assign({ source: 'pap-editor' }, msg), origin);
+}
+
+function embedLoad(msg) {
+  returnToRoot();
+  nodes = {}; arrows = {}; nextNid = 1; nextAid = 1;
+  ctxStack = []; ctxTitle = 'Hauptprogramm';
+  if (msg.diagram && typeof msg.diagram === 'object') {
+    try { loadPayload(msg.diagram); }
+    catch (err) { alert('Das gespeicherte Diagramm konnte nicht geladen werden: ' + err.message); nodes = {}; arrows = {}; }
+  }
+  curFile = typeof msg.title === 'string' && msg.title ? msg.title.replace(/[^\w\-äöüÄÖÜß ]+/g, '_') + '.json' : null;
+  selNodes = new Set(); selArrow = null;
+  undoStack = []; redoStack = [];
+  embedChanged = false;
+  updateCtxUI(); redraw();
+  setStatus('Diagramm geladen');
+}
+
+function embedSave() {
+  if (!embedOrigin) { alert('Keine Verbindung zur einbettenden Seite.'); return; }
+  returnToRoot();
+  updateCtxUI(); redraw();
+  const payload = statePayload();
+  const svg = buildSVG(new Set(Object.keys(nodes).map(Number))) || '';
+  embedSend({ event: 'save', diagram: payload, svg: svg }, embedOrigin);
+  embedChanged = false;
+  setStatus('An das Projekt übergeben …');
+}
+
+function embedExit() {
+  if (embedChanged && !confirm('Nicht übernommene Änderungen verwerfen?')) return;
+  if (embedOrigin) embedSend({ event: 'exit' }, embedOrigin);
+}
+
+function initEmbed() {
+  if (!EMBED) return;
+  document.body.classList.add('embed');
+
+  const menubar = byId('menubar', true);
+  if (menubar) {
+    const close = document.createElement('button');
+    close.id = 'btn-embed-exit'; close.className = 'btn-menu'; close.textContent = 'Schließen';
+    close.addEventListener('click', embedExit);
+    const save = document.createElement('button');
+    save.id = 'btn-embed-save'; save.className = 'btn-menu btn-accent'; save.textContent = 'In Projekt übernehmen';
+    save.addEventListener('click', embedSave);
+    menubar.prepend(close);
+    menubar.prepend(save);
+  }
+
+  window.addEventListener('message', e => {
+    if (e.source !== window.parent) return;
+    const m = e.data;
+    if (!m || typeof m !== 'object' || m.target !== 'pap-editor') return;
+    if (m.action === 'load') {
+      embedOrigin = e.origin;
+      embedLoad(m);
+    }
+  });
+
+  // "bereit" enthaelt keine Daten und darf daher an jede Origin gehen
+  embedSend({ event: 'ready' }, '*');
 }
 
 window.addEventListener('DOMContentLoaded', init);

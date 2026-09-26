@@ -95,3 +95,22 @@ bash start_pap.sh
 ```
 
 In VS Code kannst du auch direkt die Aufgabe "Start PAP Editor" ausfuehren oder die Run-Konfiguration "PAP Editor starten" mit F5 starten.
+
+## Einbettung in andere Web-Apps (`?embed=1`)
+
+Die Web-Version kann per iframe eingebettet werden (z. B. vom Projektmanagement-Tool,
+Aufgabenansicht). Mit `?embed=1` erscheinen die Buttons "In Projekt uebernehmen" und
+"Schliessen", der Download-Hinweis auf die Desktop-Version entfaellt.
+
+Protokoll ueber `window.postMessage` (in `web/static/pap.js`, Abschnitt "Einbettung"):
+
+| Richtung | Nachricht |
+|---|---|
+| Editor -> Host | `{source:'pap-editor', event:'ready'}` |
+| Host -> Editor | `{target:'pap-editor', action:'load', diagram:<JSON wie "Speichern" oder null>, title}` |
+| Editor -> Host | `{source:'pap-editor', event:'save', diagram:<JSON>, svg:<SVG-Text>}` |
+| Editor -> Host | `{source:'pap-editor', event:'exit'}` |
+
+Der Editor nimmt nur Nachrichten seines Eltern-Fensters an und schickt Diagrammdaten
+nur an dessen Origin. Der Host sollte umgekehrt `event.origin` und `event.source` pruefen.
+
