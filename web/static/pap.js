@@ -2504,7 +2504,7 @@ function init() {
   if (!setupCanvas()) { warnungVeralteteSeite(); return; }
   buildPalette();
   bindEvents();
-  createStartScene();
+  //createStartScene();
   updateCtxUI();
 
   // Toolbar
