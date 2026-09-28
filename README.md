@@ -107,9 +107,26 @@ Protokoll ueber `window.postMessage` (in `web/static/pap.js`, Abschnitt "Einbett
 | Richtung | Nachricht |
 |---|---|
 | Editor -> Host | `{source:'pap-editor', event:'ready'}` |
-| Host -> Editor | `{target:'pap-editor', action:'load', diagram:<JSON wie "Speichern" oder null>, title}` |
+| Host -> Editor | `{target:'pap-editor', action:'load', diagram:<JSON wie "Speichern" oder null>, title, downloads:true}` |
 | Editor -> Host | `{source:'pap-editor', event:'save', diagram:<JSON>, svg:<SVG-Text>}` |
 | Editor -> Host | `{source:'pap-editor', event:'exit'}` |
+| Editor -> Host | `{source:'pap-editor', event:'download', name, mime, blob:<Blob>}` |
+
+Downloads (Speichern, PNG, JPG, SVG) blockieren Browser im iframe oft – bei
+`sandbox` ohne `allow-downloads` und in Safari bei fremder Origin. Schickt der Host
+in `load` den Schalter `downloads:true`, uebergibt der Editor die Datei stattdessen
+per `download`-Nachricht, und der Host speichert sie selbst:
+
+```js
+if (e.data.event === 'download') {
+  const url = URL.createObjectURL(e.data.blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: e.data.name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+```
+
+Ohne `downloads:true` versucht der Editor den Download wie bisher selbst.
 
 Der Editor nimmt nur Nachrichten seines Eltern-Fensters an und schickt Diagrammdaten
 nur an dessen Origin. Der Host sollte umgekehrt `event.origin` und `event.source` pruefen.

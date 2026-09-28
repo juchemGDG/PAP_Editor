@@ -1762,6 +1762,13 @@ function xmlEsc(s) {
 // die URL bleibt eine Minute gültig, sonst endet ein verspätetes Laden in
 // "WebKitBlobResource-Fehler 1".
 function downloadBlob(blob, name) {
+  // Im iframe blockieren Browser den Download oft (sandbox ohne
+  // allow-downloads, Safari bei fremder Origin) – dann speichert der Host.
+  if (EMBED && embedHostDownloads) {
+    embedSend({ event: 'download', name: name, mime: blob.type || 'application/octet-stream', blob: blob }, embedOrigin);
+    setStatus(`${name} an die einbettende Seite übergeben`);
+    return;
+  }
   const url = URL.createObjectURL(new Blob([blob], {type: 'application/octet-stream'}));
   const a = document.createElement('a');
   a.href = url; a.download = name; a.rel = 'noopener'; a.style.display = 'none';
@@ -2593,12 +2600,16 @@ function init() {
 //   Host -> Editor:  {target:'pap-editor', action:'load', diagram:<JSON wie "Speichern"|null>, title?:string}
 //   Editor -> Host:  {source:'pap-editor', event:'save', diagram:<JSON>, svg:<SVG-Text>}
 //   Editor -> Host:  {source:'pap-editor', event:'exit'}
+//   Editor -> Host:  {source:'pap-editor', event:'download', name, mime, blob:<Blob>}
+//                    (Speichern/PNG/JPG/SVG; nur wenn load downloads:true enthielt,
+//                    sonst versucht der Editor den Download selbst)
 // Der Editor nimmt nur Nachrichten seines Eltern-Fensters an und antwortet
 // ausschliesslich an dessen Origin (aus der load-Nachricht).
 // ════════════════════════════════════════════════════════════
 const EMBED = new URLSearchParams(location.search).get('embed') === '1' && window.parent !== window;
 let embedOrigin  = null;
 let embedChanged = false;
+let embedHostDownloads = false;   // Host speichert Dateien selbst (load mit downloads:true)
 
 function embedSend(msg, origin) {
   window.parent.postMessage(Object.assign({ source: 'pap-editor' }, msg), origin);
@@ -2658,6 +2669,7 @@ function initEmbed() {
     if (!m || typeof m !== 'object' || m.target !== 'pap-editor') return;
     if (m.action === 'load') {
       embedOrigin = e.origin;
+      embedHostDownloads = m.downloads === true;
       embedLoad(m);
     }
   });
