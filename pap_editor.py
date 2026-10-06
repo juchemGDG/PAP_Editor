@@ -2857,42 +2857,62 @@ class PapEditor(tk.Tk):
         return "\n".join(s)
 
     def render_to_image(self):
-        width = max(1600, int(max((node.x + node.width for node in self.nodes.values()), default=1200) + 120))
-        height = max(1200, int(max((node.y + node.height for node in self.nodes.values()), default=900) + 120))
+        # Ausschnitt aus Bausteinen UND Pfeilverlaeufen bestimmen, sonst werden
+        # Umbrueche nach rechts/links (ueber/unter den Bausteinen) abgeschnitten
+        routes = {}
+        for arrow in self.arrows.values():
+            if arrow.source_id in self.nodes and arrow.target_id in self.nodes:
+                route = self._arrow_route(arrow)
+                if route:
+                    routes[arrow.id] = route
+        xs = [v for n in self.nodes.values() for v in (n.x - n.width / 2, n.x + n.width / 2)]
+        ys = [v for n in self.nodes.values() for v in (n.y - n.height / 2, n.y + n.height / 2)]
+        for arrow_id, route in routes.items():
+            xs += [p[0] for p in route]
+            ys += [p[1] for p in route]
+            label = self.arrows[arrow_id].label
+            if label:
+                mx, my = self._arrow_label_pos(route)
+                xs.append(mx + 4 + 8 * len(label))
+                ys.append(my - 12)
+        pad = 48
+        ox = (min(xs) if xs else 0) - pad
+        oy = (min(ys) if ys else 0) - pad
+        width = max(1, int(math.ceil((max(xs) if xs else 0) - ox + pad)))
+        height = max(1, int(math.ceil((max(ys) if ys else 0) - oy + pad)))
+
+        def sh(coords):
+            # flache Koordinatenliste [x, y, x, y, ...] in Bildkoordinaten verschieben
+            return [c - (ox if i % 2 == 0 else oy) for i, c in enumerate(coords)]
+
         image = Image.new("RGBA", (width, height), (248, 250, 252, 255))
         draw = ImageDraw.Draw(image)
         fonts: Dict[int, object] = {}
         small_font = self._load_font(12)
-        draw.rectangle([0, 0, width, height], fill="#f8fafc")
-        for arrow in self.arrows.values():
-            source = self.nodes.get(arrow.source_id)
-            target = self.nodes.get(arrow.target_id)
-            if not source or not target:
-                continue
-            route = self._arrow_route(arrow)
-            if not route:
-                continue
-            flat = [coord for point in route for coord in point]
+        for arrow_id, route in routes.items():
+            arrow = self.arrows[arrow_id]
+            flat = sh([coord for point in route for coord in point])
             draw.line(flat, fill="#111111", width=3, joint="curve")
             self._draw_arrow_head(draw, flat[-4], flat[-3], flat[-2], flat[-1])
             if arrow.label:
                 mx, my = self._arrow_label_pos(route)
-                draw.text((mx + 4, my - 9), arrow.label, fill="#111111", font=small_font)
+                draw.text((mx - ox + 4, my - oy - 9), arrow.label, fill="#111111", font=small_font)
         for node in self.nodes.values():
             fill, border = NODE_STYLE.get(node.template_label, DEFAULT_STYLE)
-            x1, y1, x2, y2 = node.bbox()
+            x1, y1, x2, y2 = sh(list(node.bbox()))
+            cx, cy = node.x - ox, node.y - oy
             shape = shape_of(node)
             if shape == "terminator":
                 draw.rounded_rectangle([x1, y1, x2, y2], radius=node.height / 2, fill=fill, outline=border, width=3)
             elif shape == "diamond":
-                draw.polygon(diamond_points(node.x, node.y, node.width, node.height), fill=fill, outline=border, width=3)
+                draw.polygon(diamond_points(cx, cy, node.width, node.height), fill=fill, outline=border, width=3)
             elif shape == "connector":
                 d = min(node.width, node.height)
-                draw.ellipse([node.x - d / 2, node.y - d / 2, node.x + d / 2, node.y + d / 2], fill="#f8fafc", outline=border, width=3)
+                draw.ellipse([cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2], fill="#f8fafc", outline=border, width=3)
             elif shape == "loop_start":
-                draw.polygon(loop_start_points(node.x, node.y, node.width, node.height), fill=fill, outline=border, width=3)
+                draw.polygon(loop_start_points(cx, cy, node.width, node.height), fill=fill, outline=border, width=3)
             elif shape == "loop_end":
-                draw.polygon(loop_end_points(node.x, node.y, node.width, node.height), fill=fill, outline=border, width=3)
+                draw.polygon(loop_end_points(cx, cy, node.width, node.height), fill=fill, outline=border, width=3)
             elif shape == "subroutine":
                 draw.rectangle([x1, y1, x2, y2], fill=fill, outline=border, width=3)
                 draw.line([x1 + 11, y1, x1 + 11, y2], fill=border, width=2)
@@ -2907,7 +2927,7 @@ class PapEditor(tk.Tk):
                 text_bbox = draw.multiline_textbbox((0, 0), label, font=font, align="center")
                 tw = text_bbox[2] - text_bbox[0]
                 th = text_bbox[3] - text_bbox[1]
-                draw.multiline_text((node.x - tw / 2, node.y - th / 2), label, fill="#111111", font=font, align="center")
+                draw.multiline_text((cx - tw / 2, cy - th / 2), label, fill="#111111", font=font, align="center")
         return image
 
     def _draw_arrow_head(self, draw, x1, y1, x2, y2):

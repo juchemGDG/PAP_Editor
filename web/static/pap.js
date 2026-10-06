@@ -1654,11 +1654,23 @@ function exportJPG() { renderOffscreen(oc => oc.toBlob(b => downloadBlob(b,'diag
 function renderOffscreen(cb) {
   const ns = Object.values(nodes);
   if (!ns.length) { alert('Keine Elemente zum Exportieren.'); return; }
+  // Ausschnitt aus Bausteinen UND Pfeilverläufen, sonst werden Umbrüche
+  // nach rechts/links (die über/unter den Bausteinen verlaufen) abgeschnitten
+  const xs = ns.flatMap(n=>[n.x-n.width/2, n.x+n.width/2]);
+  const ys = ns.flatMap(n=>[n.y-n.height/2, n.y+n.height/2]);
+  for (const a of Object.values(arrows)) {
+    const r = arrowRoute(a); if (!r) continue;
+    for (const [x,y] of r) { xs.push(x); ys.push(y); }
+    if (a.label) {
+      const [mx,my] = labelPos(r);
+      xs.push(mx + 4 + 8*a.label.length); ys.push(my - 16);
+    }
+  }
   const pad = 48;
-  const minX = Math.min(...ns.map(n=>n.x-n.width/2))  - pad;
-  const minY = Math.min(...ns.map(n=>n.y-n.height/2)) - pad;
-  const maxX = Math.max(...ns.map(n=>n.x+n.width/2))  + pad;
-  const maxY = Math.max(...ns.map(n=>n.y+n.height/2)) + pad;
+  const minX = Math.min(...xs) - pad;
+  const minY = Math.min(...ys) - pad;
+  const maxX = Math.max(...xs) + pad;
+  const maxY = Math.max(...ys) + pad;
   const W = maxX-minX, H = maxY-minY;
   const sc = 2;   // 2× für scharfe Ausgabe
   const oc = document.createElement('canvas');
