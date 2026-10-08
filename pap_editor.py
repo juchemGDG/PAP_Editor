@@ -1384,6 +1384,22 @@ def collect_ibds(items: List[dict]) -> List[dict]:
     return found
 
 
+def is_ibd_file(payload) -> bool:
+    """Datei des IBD-Editors (…_ibd.json) statt eines Ablaufplans?"""
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("format") == "ibd-editor":
+        return True
+    items = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+    return bool(items) and not any(isinstance(n, dict) and (n.get("template_label") or n.get("templateLabel"))
+                                   for n in items)
+
+
+IBD_FILE_HINT = ("Das ist die Datei eines Informationsflusses (IBD), kein Ablaufplan.\n\n"
+                 "Bitte die PAP-Datei laden (z. B. „%s“). Den Informationsfluss öffnest du danach "
+                 "per Doppelklick auf den Infofluss-Block – er ist in der PAP-Datei enthalten.")
+
+
 def ibd_path(path: str, index: int, count: int, ext: str) -> str:
     """diagramm.png -> diagramm_ibd.png (bei mehreren: _ibd_2, _ibd_3 …)."""
     stem = os.path.splitext(path)[0]
@@ -2937,12 +2953,22 @@ class PapEditor(tk.Tk):
         path = filedialog.askopenfilename(filetypes=[("PAP Datei", "*.json")], title="Diagramm laden")
         if not path:
             return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError) as err:
+            messagebox.showerror("Fehler beim Laden", str(err))
+            return
+        if is_ibd_file(payload):
+            pap_name = re.sub(r"_ibd(_\d+)?\.json$", ".json", os.path.basename(path), flags=re.IGNORECASE)
+            messagebox.showinfo("Datei des IBD-Editors", IBD_FILE_HINT % pap_name)
+            return
         self._return_to_root()
         if not self._confirm_discard():
             return
         self.context_stack = []
         self.context_title = "Hauptprogramm"
-        self._read_json(path)
+        self._load_payload(payload)
         self.selected_node_ids = set()
         self.selected_arrow_id = None
         self.current_file = path

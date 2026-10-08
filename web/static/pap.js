@@ -1654,6 +1654,19 @@ function saveDiagram() {
 
 function baseName() { return curFile ? curFile.replace(/\.json$/i, '') : 'diagramm'; }
 
+/** Datei des IBD-Editors (…_ibd.json) statt eines Ablaufplans? */
+function isIbdFile(p) {
+  if (!p || typeof p !== 'object') return false;
+  if (p.format === 'ibd-editor') return true;
+  const ns = Array.isArray(p.nodes) ? p.nodes : [];
+  return ns.length > 0 && !ns.some(n => n && (n.templateLabel || n.template_label));
+}
+
+const IBD_FILE_HINT =
+  'Das ist die Datei eines Informationsflusses (IBD), kein Ablaufplan.\n\n' +
+  'Bitte die PAP-Datei laden (z. B. „%s“). Den Informationsfluss öffnest du danach ' +
+  'per Doppelklick auf den Infofluss-Block – er ist in der PAP-Datei enthalten.';
+
 function loadDiagram() {
   const inp = document.createElement('input');
   inp.type='file'; inp.accept='.json';
@@ -1664,6 +1677,10 @@ function loadDiagram() {
     r.onload = ev => {
       try {
         const p = JSON.parse(ev.target.result);
+        if (isIbdFile(p)) {
+          showModal('Datei des IBD-Editors', IBD_FILE_HINT.replace('%s', f.name.replace(/_ibd(_\d+)?\.json$/i, '.json')));
+          return;
+        }
         returnToRoot();
         nodes={}; arrows={};
         ctxStack=[]; ctxTitle='Hauptprogramm';
@@ -1922,6 +1939,11 @@ function xmlEsc(s) {
 // Blob-URL als Seite. Mit octet-stream wird die Datei immer heruntergeladen;
 // die URL bleibt eine Minute gültig, sonst endet ein verspätetes Laden in
 // "WebKitBlobResource-Fehler 1".
+// Mehrere Downloads direkt hintereinander (Speichern: PAP + IBD) verwirft
+// Safari bis auf den letzten – deshalb mit etwas Abstand nacheinander.
+const DOWNLOAD_GAP = 600;   // ms
+let nextDownloadAt = 0;
+
 function downloadBlob(blob, name) {
   // Im iframe blockieren Browser den Download oft (sandbox ohne
   // allow-downloads, Safari bei fremder Origin) – dann speichert der Host.
@@ -1930,6 +1952,13 @@ function downloadBlob(blob, name) {
     setStatus(`${name} an die einbettende Seite übergeben`);
     return;
   }
+  const now = Date.now(), wait = Math.max(0, nextDownloadAt - now);
+  nextDownloadAt = now + wait + DOWNLOAD_GAP;
+  if (wait) setTimeout(() => startDownload(blob, name), wait);
+  else startDownload(blob, name);   // erster Download sofort (noch in der Klick-Geste)
+}
+
+function startDownload(blob, name) {
   const url = URL.createObjectURL(new Blob([blob], {type: 'application/octet-stream'}));
   const a = document.createElement('a');
   a.href = url; a.download = name; a.rel = 'noopener'; a.style.display = 'none';
