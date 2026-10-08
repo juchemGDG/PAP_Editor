@@ -22,6 +22,7 @@ const NODE_STYLE = {
   'Verzweigung zu': ['#ffffff', NODE_BORDER],
   'Schleife':       ['#fdcb4a', NODE_BORDER],
   'Schleife zu':    ['#fdcb4a', NODE_BORDER],
+  'Infofluss':      ['#d4d4d4', NODE_BORDER],
 };
 const DEFAULT_STYLE = ['#ffffff', NODE_BORDER];
 
@@ -34,6 +35,7 @@ const NODE_SHAPE = {
   'Verzweigung zu': 'connector',
   'Schleife':       'loop_start',
   'Schleife zu':    'loop_end',
+  'Infofluss':      'rect',
 };
 
 const NODE_TYPES = [
@@ -45,9 +47,18 @@ const NODE_TYPES = [
   { label: 'Verzweigung zu', kind: 'connector',  rel: 'Bilder/Verzweigung_zu.png' },
   { label: 'Schleife',       kind: 'loop_start', rel: 'Bilder/Schleife_auf.png'   },
   { label: 'Schleife zu',    kind: 'loop_end',   rel: 'Bilder/Schleife_zu.png'    },
+  { label: 'Infofluss',      kind: 'rect',       rel: ''                          },
 ];
 
 const UNLABELED = new Set(['connector', 'loop_end']);
+
+// Infofluss: grauer Block links neben dem Start, verweist auf ein
+// Informationsfluss-Blockdiagramm (IBD), das im IBD-Editor bearbeitet wird.
+// Nicht Teil des Ablaufs – die Plausibilitätsprüfung ignoriert ihn.
+const INFO_LABEL = 'Infofluss';
+const IBD_ORIGIN = 'https://ibd.mint-checker.de';
+const IBD_URL    = IBD_ORIGIN + '/?embed=1';
+function isInfo(n) { return !!n && (n.templateLabel || n.template_label) === INFO_LABEL; }
 
 const NODE_W = 104;
 const NODE_H = 44;
@@ -134,6 +145,7 @@ function ports(n) {
 }
 
 function allowedPorts(n) {
+  if (isInfo(n)) return ['right'];          // führt nur nach rechts zum Start
   const sh = shapeOf(n);
   let ps = (sh === 'diamond' || sh === 'connector') ? ['top','bottom','right'] : ['top','bottom'];
   if (n.templateLabel === 'Start') ps = ps.filter(p => p !== 'top');
@@ -750,6 +762,10 @@ function addArrow(srcId, srcPort, tgtId, tgtPort) {
   const s = nodes[srcId], t = nodes[tgtId];
   if (!s || !t) return null;
   if (srcPort === 'top' || tgtPort === 'bottom') return null;
+  // Infofluss nur von rechts an die linke Seite des Start-Blocks
+  if (isInfo(s) || isInfo(t) || tgtPort === 'left') {
+    if (!isInfo(s) || t.templateLabel !== 'Start' || tgtPort !== 'left') return null;
+  }
   if (hasPath(tgtId, srcId)) return null;
   const a = { id: nextAid++, sourceId: srcId, sourcePort: srcPort,
               targetId: tgtId, targetPort: tgtPort, waypoints: [], label: '' };
@@ -775,6 +791,7 @@ function backJumpWaypoints(s, srcPort, t, tgtPort) {
  * seitlichen Anschluss → Quelle liegt rechts vom Ziel → oben schon belegt.
  */
 function bestTgtPort(src, srcPort, tgt, wx, wy) {
+  if (isInfo(src)) return 'left';
   const sh = shapeOf(tgt);
   if (sh !== 'diamond' && sh !== 'connector') return 'top';
   const occ = occupiedPorts();
@@ -854,7 +871,7 @@ function loadPayload(p) {
     // Kompatibilität desktop ↔ web (snake_case → camelCase)
     for (const [snake, camel] of [['image_rel','imageRel'], ['template_label','templateLabel'],
                                   ['text_anchor','textAnchor'], ['manual_width','manualWidth'],
-                                  ['font_size','fontSize']]) {
+                                  ['font_size','fontSize'], ['ibd_svg','ibdSvg'], ['ibd_png','ibdPng']]) {
       if (n[snake] !== undefined) { n[camel] = n[snake]; delete n[snake]; }
     }
     nodes[n.id] = n;
@@ -1544,6 +1561,13 @@ function checkR36Subprocess(nodesObj) {
 // ---- Zusammenführung ----
 
 function evaluateChart(nodesObj, arrowsObj) {
+  // Infofluss-Blöcke gehören nicht zum Ablauf: samt ihrer Pfeile ausblenden
+  const infoIds = new Set(Object.values(nodesObj).filter(isInfo).map(n => n.id));
+  if (infoIds.size) {
+    nodesObj = Object.fromEntries(Object.entries(nodesObj).filter(([, n]) => !infoIds.has(n.id)));
+    arrowsObj = Object.fromEntries(Object.entries(arrowsObj)
+      .filter(([, a]) => !infoIds.has(a.sourceId) && !infoIds.has(a.targetId)));
+  }
   const { outgoing, incoming } = buildEdgeMaps(nodesObj, arrowsObj);
   let findings = [];
   findings = findings.concat(checkR01Start(nodesObj));
@@ -1620,7 +1644,15 @@ function saveDiagram() {
   const json = JSON.stringify(statePayload(), null, 2);
   downloadBlob(new Blob([json],{type:'application/json'}),
                curFile || 'diagramm.json');
+  // Informationsflüsse zusätzlich als eigene Datei – direkt im IBD-Editor ladbar
+  if (EMBED) return;
+  collectIbds(Object.values(nodes)).forEach((n, i, all) => {
+    const name = ibdFileName(baseName(), i, all.length) + '.json';
+    downloadBlob(new Blob([JSON.stringify(n.ibd, null, 2)], {type:'application/json'}), name);
+  });
 }
+
+function baseName() { return curFile ? curFile.replace(/\.json$/i, '') : 'diagramm'; }
 
 function loadDiagram() {
   const inp = document.createElement('input');
@@ -1648,8 +1680,12 @@ function loadDiagram() {
 }
 
 // ────── PNG / JPG export (offscreen canvas) ──────────────
-function exportPNG() { renderOffscreen(oc => oc.toBlob(b => downloadBlob(b,'diagramm.png'),'image/png')); }
-function exportJPG() { renderOffscreen(oc => oc.toBlob(b => downloadBlob(b,'diagramm.jpg'),'image/jpeg',0.95),'image/jpeg'); }
+function exportPNG() {
+  renderOffscreen(oc => oc.toBlob(b => { downloadBlob(b,'diagramm.png'); exportIbdImages('png'); },'image/png'));
+}
+function exportJPG() {
+  renderOffscreen(oc => oc.toBlob(b => { downloadBlob(b,'diagramm.jpg'); exportIbdImages('jpg'); },'image/jpeg',0.95),'image/jpeg');
+}
 
 function renderOffscreen(cb) {
   const ns = Object.values(nodes);
@@ -1694,6 +1730,119 @@ function exportSVG() {
   const svg = buildSVG(new Set(Object.keys(nodes).map(Number)));
   if (!svg) { alert('Keine Elemente zum Exportieren.'); return; }
   downloadBlob(new Blob([svg],{type:'image/svg+xml'}),'diagramm.svg');
+  exportIbdImages('svg');
+}
+
+// ────── Informationsfluss (IBD) ─────────────────────────
+/** Infofluss-Blöcke mit Inhalt, auch aus den Unterablaufplänen der Funktionen. */
+function collectIbds(list, out) {
+  out = out || [];
+  for (const n of list) {
+    if (isInfo(n) && n.ibd) out.push(n);
+    else if ((n.templateLabel || n.template_label) === 'Funktion' && n.subdiagram) {
+      try { collectIbds(JSON.parse(n.subdiagram).nodes || [], out); } catch (e) { /* beschädigt: R36 meldet das */ }
+    }
+  }
+  return out;
+}
+
+function ibdFileName(base, i, count) { return base + '_ibd' + (count > 1 ? '_' + (i + 1) : ''); }
+
+/** Bild (URL) auf eine Zeichenfläche bringen, optional mit Hintergrund. */
+function imageToCanvas(src, scale, bg) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const oc = document.createElement('canvas');
+      oc.width  = Math.max(1, Math.round((img.naturalWidth  || img.width)  * scale));
+      oc.height = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+      const c = oc.getContext('2d');
+      if (bg) { c.fillStyle = bg; c.fillRect(0, 0, oc.width, oc.height); }
+      c.drawImage(img, 0, 0, oc.width, oc.height);
+      resolve(oc);
+    };
+    img.onerror = () => reject(new Error('Bild konnte nicht gezeichnet werden'));
+    img.src = src;
+  });
+}
+
+function svgDataUrl(svg) { return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); }
+
+/** PNG des IBD (2×) – wird mitgespeichert, damit auch die Desktop-Version exportieren kann. */
+function ibdSvgToPng(svg) {
+  return imageToCanvas(svgDataUrl(svg), 2).then(oc => oc.toDataURL('image/png'));
+}
+
+/** Zu jedem Infofluss der aktuellen Ebene das IBD als eigene Bilddatei. */
+function exportIbdImages(fmt) {
+  if (EMBED) return;
+  const list = Object.values(nodes).filter(n => isInfo(n) && (n.ibdSvg || n.ibdPng));
+  list.forEach((n, i) => {
+    const name = ibdFileName('diagramm', i, list.length) + '.' + fmt;
+    if (fmt === 'svg') {
+      if (n.ibdSvg) downloadBlob(new Blob([n.ibdSvg], {type:'image/svg+xml'}), name);
+      return;
+    }
+    const src = n.ibdPng || svgDataUrl(n.ibdSvg);
+    const scale = n.ibdPng ? 1 : 2;
+    imageToCanvas(src, scale, fmt === 'jpg' ? '#ffffff' : null)
+      .then(oc => oc.toBlob(b => downloadBlob(b, name), fmt === 'jpg' ? 'image/jpeg' : 'image/png', 0.95))
+      .catch(err => alert('Informationsfluss-Bild: ' + err.message));
+  });
+}
+
+let ibdModal = null;     // Overlay mit dem IBD-Editor
+let ibdNodeId = null;    // Infofluss-Block, der gerade bearbeitet wird
+
+function openIbd(n) {
+  if (EMBED || !isInfo(n)) return;
+  closeIbd();
+  ibdNodeId = n.id;
+  ibdModal = document.createElement('div');
+  ibdModal.id = 'ibd-modal';
+  const frame = document.createElement('iframe');
+  frame.id = 'ibd-frame';
+  frame.title = 'Informationsfluss bearbeiten';
+  frame.src = IBD_URL;
+  ibdModal.appendChild(frame);
+  document.body.appendChild(ibdModal);
+}
+
+function closeIbd() {
+  if (ibdModal) ibdModal.remove();
+  ibdModal = null; ibdNodeId = null;
+}
+
+function ibdFrameWindow() {
+  const f = ibdModal && ibdModal.querySelector('iframe');
+  return f ? f.contentWindow : null;
+}
+
+/** Nachrichten des IBD-Editors (gleiches Protokoll wie beim PAP-Einbettungsmodus). */
+function onIbdMessage(e) {
+  const win = ibdFrameWindow();
+  if (!win || e.source !== win || e.origin !== IBD_ORIGIN) return;
+  const m = e.data;
+  if (!m || typeof m !== 'object' || m.source !== 'ibd-editor') return;
+  const n = nodes[ibdNodeId];
+  if (m.event === 'ready') {
+    win.postMessage({ target: 'ibd-editor', action: 'load', diagram: (n && n.ibd) || null,
+                      title: baseName() + '_ibd', downloads: true }, IBD_ORIGIN);
+  } else if (m.event === 'save') {
+    if (n && m.diagram && typeof m.diagram === 'object') {
+      pushUndo();
+      n.ibd = m.diagram;
+      n.ibdSvg = typeof m.svg === 'string' ? m.svg : '';
+      delete n.ibdPng;
+      if (n.ibdSvg) ibdSvgToPng(n.ibdSvg).then(png => { n.ibdPng = png; }).catch(() => {});
+      setStatus('Informationsfluss übernommen');
+    }
+    closeIbd(); redraw();
+  } else if (m.event === 'exit') {
+    closeIbd();
+  } else if (m.event === 'download' && m.blob instanceof Blob) {
+    downloadBlob(m.blob, typeof m.name === 'string' && m.name ? m.name : 'informationsfluss');
+  }
 }
 
 function buildSVG(nodeIds) {
@@ -1915,7 +2064,12 @@ function pointerUp(clientX, clientY) {
       const tgtPort = bestTgtPort(nodes[srcId], srcPort, nodes[tgtId], wx, wy);
       pushUndo();
       const created = addArrow(srcId,srcPort,tgtId,tgtPort);
-      if (!created) { undoStack.pop(); showModal('Verbindung abgelehnt','Diese Verbindung würde die Flussrichtung verletzen oder einen Zyklus erzeugen.'); }
+      if (!created) {
+        undoStack.pop();
+        showModal('Verbindung abgelehnt', isInfo(nodes[srcId]) || isInfo(nodes[tgtId])
+          ? 'Ein Infofluss-Block wird nur mit dem Start-Block verbunden (Pfeil vom Infofluss nach rechts zum Start).'
+          : 'Diese Verbindung würde die Flussrichtung verletzen oder einen Zyklus erzeugen.');
+      }
     }
     connSrc=null; tempTarget=null;
   }
@@ -1953,14 +2107,8 @@ function dblClick(clientX, clientY) {
   if (nid !== null) {
     const n = nodes[nid];
     if (UNLABELED.has(shapeOf(n))) return;
-    showPrompt('Symbol bearbeiten','Inhalt des Symbols:', n.label, v => {
-      if (v !== null) {
-        pushUndo();
-        const txt = v.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
-        n.label = txt || n.label;
-        fitSize(n); redraw();
-      }
-    }, true);
+    if (isInfo(n) && !EMBED) { openIbd(n); return; }
+    editLabel(n);
     return;
   }
   const aid = hitArrow(wx,wy);
@@ -1970,6 +2118,20 @@ function dblClick(clientX, clientY) {
     });
   }
 }
+
+function editLabel(n) {
+  showPrompt('Symbol bearbeiten','Inhalt des Symbols:', n.label, v => {
+    if (v !== null) {
+      pushUndo();
+      const txt = v.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
+      n.label = txt || n.label;
+      fitSize(n); redraw();
+    }
+  }, true);
+}
+
+/** Blöcke mit eigenem Menü statt sofortigem Löschen per Rechtsklick. */
+function hasCtxMenu(n) { return n.templateLabel === 'Funktion' || (isInfo(n) && !EMBED); }
 
 function rightClick(wx,wy,clientX,clientY) {
   const bend = hitBend(wx,wy);
@@ -1983,6 +2145,16 @@ function rightClick(wx,wy,clientX,clientY) {
       selNodes = new Set([nid]); selArrow = null; redraw();
       showCtxMenu(clientX, clientY, [
         {label:'Funktion öffnen …', action:() => openFunction(n)},
+        {label:'Löschen', danger:true,
+         action:() => { pushUndo(); removeNode(nid); selNodes.delete(nid); redraw(); }},
+      ]);
+      return;
+    }
+    if (isInfo(n) && !EMBED) {
+      selNodes = new Set([nid]); selArrow = null; redraw();
+      showCtxMenu(clientX, clientY, [
+        {label:'Informationsfluss öffnen …', action:() => openIbd(n)},
+        {label:'Text ändern …', action:() => editLabel(n)},
         {label:'Löschen', danger:true,
          action:() => { pushUndo(); removeNode(nid); selNodes.delete(nid); redraw(); }},
       ]);
@@ -2029,7 +2201,7 @@ function startLongPress(clientX, clientY) {
     longPressT = null;
     const [wx,wy] = worldPt(clientX, clientY);
     const nid = hitNode(wx,wy);
-    if (nid === null || nodes[nid].templateLabel !== 'Funktion') return;
+    if (nid === null || !hasCtxMenu(nodes[nid])) return;
     dragState = null; dragSnap = null; connSrc = null; tempTarget = null;
     rightClick(wx, wy, clientX, clientY);
   }, 550);
@@ -2184,6 +2356,7 @@ function bindEvents() {
   // ── Tastatur ──────────────────────────────────────────────
   document.addEventListener('keydown', e => {
     if (e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+    if (ibdModal) return;   // IBD-Editor offen: Ebene und Diagramm nicht verändern
     const cm = e.ctrlKey||e.metaKey;
     if (cm&&e.key==='z')                        { undo();           e.preventDefault(); }
     if (cm&&(e.key==='y'||(e.shiftKey&&e.key==='z'))) { redo();    e.preventDefault(); }
@@ -2206,7 +2379,7 @@ function buildPalette() {
   const pal = byId('palette', true);
   if (!pal) return;
   pal.innerHTML = '';
-  for (const item of NODE_TYPES) {
+  for (const item of paletteTypes()) {
     const card = document.createElement('div');
     card.className = 'palette-card';
     // Mini-Canvas mit der Form
@@ -2257,10 +2430,13 @@ function palHit(clientX, clientY) {
   const cards = document.querySelectorAll('.palette-card');
   for (let i=0; i<cards.length; i++) {
     const r = cards[i].getBoundingClientRect();
-    if (clientX>=r.left&&clientX<=r.right&&clientY>=r.top&&clientY<=r.bottom) return NODE_TYPES[i];
+    if (clientX>=r.left&&clientX<=r.right&&clientY>=r.top&&clientY<=r.bottom) return paletteTypes()[i];
   }
   return null;
 }
+
+/** Im Einbettungsmodus gibt es keinen Infofluss – das steuert dort der Host. */
+function paletteTypes() { return EMBED ? NODE_TYPES.filter(t => t.label !== INFO_LABEL) : NODE_TYPES; }
 
 // ════════════════════════════════════════════════════════════
 // UI-Hilfsfunktionen
@@ -2598,6 +2774,8 @@ function init() {
   ov.id='sidebar-overlay';
   (byId('app') || document.body).appendChild(ov);
   ov.addEventListener('click', () => { const sb = byId('sidebar'); if (sb) sb.classList.remove('open'); });
+
+  window.addEventListener('message', onIbdMessage);
 
   redraw();
   warnungVeralteteSeite();

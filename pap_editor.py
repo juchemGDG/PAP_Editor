@@ -1,10 +1,17 @@
+import base64
+import io
 import json
 import math
 import os
+import queue
 import re
+import secrets
 import sys
+import threading
 import time
 import tkinter as tk
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.sax.saxutils import escape
 from dataclasses import dataclass, field
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
@@ -47,6 +54,7 @@ NODE_STYLE = {
     "Verzweigung zu": ("#ffffff", NODE_BORDER),
     "Schleife":       ("#fdcb4a", NODE_BORDER),
     "Schleife zu":    ("#fdcb4a", NODE_BORDER),
+    "Infofluss":      ("#d4d4d4", NODE_BORDER),
 }
 DEFAULT_STYLE = ("#ffffff", NODE_BORDER)
 
@@ -60,6 +68,7 @@ NODE_SHAPE = {
     "Verzweigung zu": "connector",
     "Schleife":       "loop_start",
     "Schleife zu":    "loop_end",
+    "Infofluss":      "rect",
 }
 
 NODE_TYPES = [
@@ -71,7 +80,19 @@ NODE_TYPES = [
     ("Verzweigung zu", "connector", "Bilder/Verzweigung_zu.png"),
     ("Schleife", "loop_start", "Bilder/Schleife_auf.png"),
     ("Schleife zu", "loop_end", "Bilder/Schleife_zu.png"),
+    ("Infofluss", "rect", ""),
 ]
+
+# Infofluss: grauer Block links neben dem Start, verweist auf ein
+# Informationsfluss-Blockdiagramm (IBD), das im IBD-Editor (Browser) bearbeitet
+# wird. Nicht Teil des Ablaufs – die Plausibilitaetspruefung ignoriert ihn.
+INFO_LABEL = "Infofluss"
+IBD_ORIGIN = "https://ibd.mint-checker.de"
+IBD_URL = IBD_ORIGIN + "/?embed=1"
+
+
+def is_info(node) -> bool:
+    return node is not None and node.template_label == INFO_LABEL
 
 
 # shapes that never carry a caption
@@ -322,6 +343,9 @@ class Node:
     text_anchor: str = "center"
     manual_width: bool = False      # True: Breite wurde von Hand gesetzt und waechst nicht mehr mit
     font_size: int = FONT_SIZE      # Schriftgroesse des Blocktexts
+    ibd: Optional[dict] = None      # Infofluss: IBD-Datei (Format des IBD-Editors)
+    ibd_svg: str = ""               # Infofluss: Bild des IBD als SVG
+    ibd_png: str = ""               # Infofluss: Bild des IBD als PNG (data:-URL)
 
     def bbox(self) -> Tuple[float, float, float, float]:
         return (self.x - self.width / 2, self.y - self.height / 2, self.x + self.width / 2, self.y + self.height / 2)
@@ -1044,6 +1068,12 @@ def evaluate_chart(nodes: Dict[int, "Node"], arrows: Dict[int, "Arrow"], disable
     never raises on malformed input.
     """
     disabled_rules = disabled_rules or set()
+    # Infofluss-Bloecke gehoeren nicht zum Ablauf: samt ihrer Pfeile ausblenden
+    info_ids = {nid for nid, n in nodes.items() if is_info(n)}
+    if info_ids:
+        nodes = {nid: n for nid, n in nodes.items() if nid not in info_ids}
+        arrows = {aid: a for aid, a in arrows.items()
+                  if a.source_id not in info_ids and a.target_id not in info_ids}
     outgoing, incoming = _build_edge_maps(nodes, arrows)
 
     findings: List[Finding] = []
@@ -1135,12 +1165,229 @@ HELP_TEXT: List[Tuple[str, str]] = [
     ("li", "Rechtsklick auf einen Funktionsblock → „Funktion öffnen …“."),
     ("li", "Oben links steht, wo du gerade bist (z. B. „Hauptprogramm › Funktion: berechne“). "
            "Zurück mit „← Zurück“ oder Esc."),
+    ("h", "Informationsfluss"),
+    ("li", "Den grauen Baustein „Infofluss“ links neben den Start setzen und von seinem rechten "
+           "Anschlusspunkt einen Pfeil auf den Start ziehen."),
+    ("li", "Doppelklick auf den Infofluss (oder Rechtsklick → „Informationsfluss öffnen …“) öffnet den "
+           "IBD-Editor im Browser (Internetverbindung nötig). Mit „In Projekt übernehmen“ landet das "
+           "Blockdiagramm im PAP."),
+    ("li", "Text des Infofluss-Bausteins ändern: Rechtsklick → „Text ändern …“."),
+    ("li", "Speichern legt zusätzlich die IBD-Datei (…_ibd.json) ab, PNG/JPG/SVG export zusätzlich das "
+           "Bild des Informationsflusses (…_ibd.png usw.)."),
+    ("li", "Die Prüfung ignoriert den Infofluss – er gehört nicht zum Ablauf."),
     ("h", "Prüfen, Speichern, Export"),
     ("li", "„Diagramm prüfen“ kontrolliert den Plan nach den PAP-Regeln (DIN 66001) und markiert die betroffenen Blöcke."),
     ("li", "Speichern/Laden als JSON-Datei – kompatibel mit der Web-Version."),
     ("li", "Export als PNG, JPG oder SVG."),
     ("li", "Raster ein/aus und Rasterweite unten in der linken Leiste."),
 ]
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Informationsfluss: IBD-Editor im Browser
+# ════════════════════════════════════════════════════════════════════════
+#
+# Tkinter kann keine Webseite anzeigen. Deshalb startet der Editor einen
+# kleinen Webserver auf 127.0.0.1 und oeffnet im Standardbrowser eine Seite,
+# die den IBD-Editor (ibd.mint-checker.de, ?embed=1) per iframe einbettet und
+# dasselbe postMessage-Protokoll spricht wie die Web-Version. "In Projekt
+# uebernehmen" schickt IBD-Datei, SVG und PNG per POST zurueck; der Editor holt
+# die Ereignisse im Tk-Thread aus einer Queue. Jede Sitzung hat ein zufaelliges
+# Token im Pfad, damit fremde Seiten nichts einschleusen koennen.
+
+IBD_HOST_PAGE = """<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Informationsfluss – PAP Editor</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: Helvetica, Arial, sans-serif; }
+  iframe { display: block; width: 100%; height: 100%; border: 0; }
+  #done { display: none; position: fixed; inset: 0; background: #f8fafc; color: #0f172a;
+          align-items: center; justify-content: center; text-align: center; font-size: 20px; padding: 24px; }
+</style>
+</head>
+<body>
+<iframe id="ibd" src="__IBD_URL__" title="Informationsfluss bearbeiten"></iframe>
+<div id="done"></div>
+<script>
+const IBD_ORIGIN = "__IBD_ORIGIN__";
+const BASE = "/ibd/__TOKEN__/";
+const frame = document.getElementById("ibd");
+
+function done(text) {
+  frame.remove();
+  const box = document.getElementById("done");
+  box.textContent = text + " Dieses Fenster kann geschlossen werden.";
+  box.style.display = "flex";
+  window.close();   // klappt nur, wenn der Browser es erlaubt
+}
+
+function svgToPng(svg) {
+  return new Promise(resolve => {
+    if (!svg) { resolve(""); return; }
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, img.naturalWidth * 2);
+      c.height = Math.max(1, img.naturalHeight * 2);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve("");
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  });
+}
+
+window.addEventListener("message", async e => {
+  if (e.source !== frame.contentWindow || e.origin !== IBD_ORIGIN) return;
+  const m = e.data;
+  if (!m || typeof m !== "object" || m.source !== "ibd-editor") return;
+  if (m.event === "ready") {
+    const r = await fetch(BASE + "load");
+    if (!r.ok) { done("Die Sitzung ist beendet."); return; }
+    const d = await r.json();
+    frame.contentWindow.postMessage({ target: "ibd-editor", action: "load", diagram: d.diagram,
+                                      title: d.title, downloads: true }, IBD_ORIGIN);
+  } else if (m.event === "save") {
+    const png = await svgToPng(m.svg);
+    const r = await fetch(BASE + "save", { method: "POST", headers: { "Content-Type": "application/json" },
+                                           body: JSON.stringify({ diagram: m.diagram, svg: m.svg || "", png }) });
+    if (r.ok) done("Der Informationsfluss wurde in den PAP Editor übernommen.");
+    else alert("Übernehmen fehlgeschlagen – ist der PAP Editor noch geöffnet?");
+  } else if (m.event === "exit") {
+    fetch(BASE + "exit", { method: "POST" }).catch(() => {});
+    done("Bearbeitung beendet.");
+  } else if (m.event === "download" && m.blob instanceof Blob) {
+    const url = URL.createObjectURL(m.blob);
+    const a = Object.assign(document.createElement("a"), { href: url, download: m.name || "informationsfluss" });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+});
+</script>
+</body>
+</html>
+"""
+
+
+class IbdBridge:
+    """Lokaler Webserver, ueber den der IBD-Editor im Browser mit dem PAP Editor spricht."""
+
+    MAX_BODY = 32 * 1024 * 1024
+
+    def __init__(self) -> None:
+        self.sessions: Dict[str, dict] = {}
+        self.events: "queue.Queue[Tuple[str, str, Optional[dict]]]" = queue.Queue()
+        self.lock = threading.Lock()
+        bridge = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:   # keine Ausgaben auf der Konsole
+                pass
+
+            def _route(self) -> Tuple[Optional[str], Optional[dict], str]:
+                parts = self.path.split("?", 1)[0].strip("/").split("/")
+                if len(parts) < 2 or parts[0] != "ibd":
+                    return None, None, ""
+                with bridge.lock:
+                    session = bridge.sessions.get(parts[1])
+                return (parts[1] if session else None), session, (parts[2] if len(parts) > 2 else "")
+
+            def _send(self, code: int, body: bytes = b"", ctype: str = "text/plain; charset=utf-8") -> None:
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                if body:
+                    self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                token, session, action = self._route()
+                if token is None:
+                    self._send(404, "Diese Sitzung ist beendet.".encode("utf-8"))
+                elif action == "":
+                    page = (IBD_HOST_PAGE.replace("__IBD_URL__", IBD_URL)
+                            .replace("__IBD_ORIGIN__", IBD_ORIGIN).replace("__TOKEN__", token))
+                    self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+                elif action == "load":
+                    body = json.dumps({"diagram": session["diagram"], "title": session["title"]}, ensure_ascii=False)
+                    self._send(200, body.encode("utf-8"), "application/json; charset=utf-8")
+                else:
+                    self._send(404)
+
+            def do_POST(self) -> None:
+                token, _, action = self._route()
+                if token is None or action not in ("save", "exit"):
+                    self._send(404)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > IbdBridge.MAX_BODY:
+                    self._send(413)
+                    return
+                raw = self.rfile.read(length) if length else b""
+                data = None
+                if action == "save":
+                    try:
+                        data = json.loads(raw.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        self._send(400)
+                        return
+                    if not isinstance(data, dict) or not isinstance(data.get("diagram"), dict):
+                        self._send(400)
+                        return
+                bridge.events.put((token, action, data))
+                self._send(204)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def open_session(self, diagram: Optional[dict], title: str) -> str:
+        token = secrets.token_urlsafe(16)
+        with self.lock:
+            self.sessions[token] = {"diagram": diagram, "title": title}
+        return token
+
+    def close_session(self, token: str) -> None:
+        with self.lock:
+            self.sessions.pop(token, None)
+
+    def url(self, token: str) -> str:
+        return f"http://127.0.0.1:{self.server.server_address[1]}/ibd/{token}/"
+
+    def take_events(self, token: str) -> List[Tuple[str, Optional[dict]]]:
+        found = []
+        while True:
+            try:
+                event_token, action, data = self.events.get_nowait()
+            except queue.Empty:
+                return found
+            if event_token == token:
+                found.append((action, data))
+
+
+def collect_ibds(items: List[dict]) -> List[dict]:
+    """Infofluss-Bloecke mit Inhalt (als dict), auch aus den Unterablaufplaenen der Funktionen."""
+    found: List[dict] = []
+    for item in items:
+        label = item.get("template_label", item.get("templateLabel"))
+        if label == INFO_LABEL and item.get("ibd"):
+            found.append(item)
+        elif label == "Funktion" and item.get("subdiagram"):
+            try:
+                found += collect_ibds(json.loads(item["subdiagram"]).get("nodes", []))
+            except (ValueError, TypeError, AttributeError):
+                pass    # beschaedigt: meldet R36
+    return found
+
+
+def ibd_path(path: str, index: int, count: int, ext: str) -> str:
+    """diagramm.png -> diagramm_ibd.png (bei mehreren: _ibd_2, _ibd_3 …)."""
+    stem = os.path.splitext(path)[0]
+    return f"{stem}_ibd{'_' + str(index + 1) if count > 1 else ''}{ext}"
 
 
 class PapEditor(tk.Tk):
@@ -1170,7 +1417,9 @@ class PapEditor(tk.Tk):
         self.palette_drag_kind: Optional[Tuple[str, str, str]] = None
         self.palette_preview_id: Optional[int] = None
         self.palette_preview_label_id: Optional[int] = None
-        self._context_menu: Optional[tk.Menu] = None    # Kontextmenue eines Funktionsblocks
+        self._context_menu: Optional[tk.Menu] = None    # Kontextmenue eines Funktions-/Infofluss-Blocks
+        self._ibd_bridge: Optional[IbdBridge] = None     # lokaler Webserver fuer den IBD-Editor
+        self._ibd_dialog: Optional[tk.Toplevel] = None   # Hinweisfenster, solange der IBD-Editor offen ist
         self.next_node_id = 1
         self.next_arrow_id = 1
         self.current_file: Optional[str] = None
@@ -1204,7 +1453,7 @@ class PapEditor(tk.Tk):
     def _load_images(self) -> None:
         for label, _, rel in NODE_TYPES:
             path = os.path.join(self.base_dir, rel)
-            if os.path.exists(path):
+            if rel and os.path.isfile(path):
                 try:
                     if Image is not None and ImageTk is not None:
                         source = Image.open(path).convert("RGBA")
@@ -1546,6 +1795,8 @@ class PapEditor(tk.Tk):
         self.canvas.create_line(gx - 3, gy + 2, gx + 3, gy + 2, fill=ACCENT)
 
     def _allowed_ports(self, node: Node) -> List[str]:
+        if is_info(node):                            # fuehrt nur nach rechts zum Start
+            return ["right"]
         # Verzweigung auf/zu verzweigen bzw. führen nur nach rechts zusammen
         if shape_of(node) in ("diamond", "connector"):
             ports = ["top", "bottom", "right"]
@@ -1777,6 +2028,10 @@ class PapEditor(tk.Tk):
             return None
         if source_port == "top" or target_port == "bottom":
             return None
+        # Infofluss nur von rechts an die linke Seite des Start-Blocks
+        if is_info(source) or is_info(target) or target_port == "left":
+            if not is_info(source) or target.template_label != "Start" or target_port != "left":
+                return None
         if self._has_path(target_id, source_id):
             return None
         arrow = Arrow(self.next_arrow_id, source_id, source_port, target_id, target_port)
@@ -2040,7 +2295,10 @@ class PapEditor(tk.Tk):
                 created = self.add_arrow_between(source_id, source_port, target_id, target_port)
                 if created is None:
                     self.undo_stack.pop()
-                    messagebox.showwarning("Verbindung abgelehnt", "Diese Verbindung würde die Flussrichtung verletzen oder einen Zyklus erzeugen.")
+                    if is_info(self.nodes[source_id]) or is_info(target):
+                        messagebox.showwarning("Verbindung abgelehnt", "Ein Infofluss-Block wird nur mit dem Start-Block verbunden (Pfeil vom Infofluss nach rechts zum Start).")
+                    else:
+                        messagebox.showwarning("Verbindung abgelehnt", "Diese Verbindung würde die Flussrichtung verletzen oder einen Zyklus erzeugen.")
             self.connection_source = None
             self.temp_arrow_id = None
             self.temp_arrow_target = None
@@ -2135,12 +2393,10 @@ class PapEditor(tk.Tk):
             node = self.nodes[node_id]
             if shape_of(node) in UNLABELED_SHAPES:
                 return
-            new_label = self._ask_multiline("Symbol bearbeiten", "Inhalt des Symbols:", node.label)
-            if new_label is not None:
-                self._push_undo()
-                node.label = new_label.strip() or node.label
-                self._fit_node_size(node)
-                self._redraw()
+            if is_info(node):
+                self.open_ibd(node)
+                return
+            self._edit_label(node)
             return
         arrow_id = self._hit_test_arrow(x, y)
         if arrow_id is not None:
@@ -2150,6 +2406,14 @@ class PapEditor(tk.Tk):
                 self._push_undo()
                 arrow.label = new_label.strip()
                 self._redraw()
+
+    def _edit_label(self, node: Node) -> None:
+        new_label = self._ask_multiline("Symbol bearbeiten", "Inhalt des Symbols:", node.label)
+        if new_label is not None:
+            self._push_undo()
+            node.label = new_label.strip() or node.label
+            self._fit_node_size(node)
+            self._redraw()
 
     def _ask_multiline(self, title: str, prompt: str, initial: str) -> Optional[str]:
         """Mehrzeiliger Eingabedialog.
@@ -2212,6 +2476,9 @@ class PapEditor(tk.Tk):
             if node.template_label == "Funktion":
                 self._show_function_menu(node, event)
                 return
+            if is_info(node):
+                self._show_info_menu(node, event)
+                return
             self.delete_node(node_id)
             return
         arrow_id = self._hit_test_arrow(x, y)
@@ -2239,6 +2506,127 @@ class PapEditor(tk.Tk):
         finally:
             menu.grab_release()
 
+    def _show_info_menu(self, node: Node, event: tk.Event) -> None:
+        """Kontextmenue eines Infofluss-Blocks (Doppelklick oeffnet direkt den IBD-Editor)."""
+        self.selected_node_ids = {node.id}
+        self.selected_arrow_id = None
+        self._redraw()
+
+        if getattr(self, "_context_menu", None) is not None:
+            self._context_menu.destroy()
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Informationsfluss öffnen …", command=lambda: self.open_ibd(node))
+        menu.add_command(label="Text ändern …", command=lambda: self._edit_label(node))
+        menu.add_separator()
+        menu.add_command(label="Löschen", command=lambda: self.delete_node(node.id))
+        self._context_menu = menu
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    # ---- Informationsfluss (IBD-Editor im Browser) ----------------------
+    def open_ibd(self, node: Node) -> None:
+        if self._ibd_dialog is not None and self._ibd_dialog.winfo_exists():
+            self._ibd_dialog.lift()
+            return
+        try:
+            if self._ibd_bridge is None:
+                self._ibd_bridge = IbdBridge()
+        except OSError as err:
+            messagebox.showerror("Informationsfluss", f"Der IBD-Editor konnte nicht gestartet werden:\n{err}")
+            return
+        bridge = self._ibd_bridge
+        stem = os.path.splitext(os.path.basename(self.current_file))[0] if self.current_file else "diagramm"
+        token = bridge.open_session(node.ibd, f"{stem}_ibd")
+        url = bridge.url(token)
+        nodes_ref, node_id = self.nodes, node.id
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Informationsfluss")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        self._ibd_dialog = dialog
+        tk.Label(dialog, text="Der Informationsfluss ist im Browser geöffnet.", font=("Helvetica", 13, "bold"),
+                 anchor="w").pack(fill="x", padx=16, pady=(16, 4))
+        tk.Label(dialog, text="Dort mit „In Projekt übernehmen“ in den PAP übernehmen\n"
+                              "oder mit „Schließen“ ohne Änderung beenden.",
+                 justify="left", anchor="w", font=("Helvetica", 11)).pack(fill="x", padx=16)
+        link = tk.Entry(dialog, width=52, font=("Helvetica", 10), relief="flat", readonlybackground="#f1f5f9")
+        link.insert(0, url)
+        link.configure(state="readonly")
+        link.pack(fill="x", padx=16, pady=(10, 0))
+
+        def finish(event: Optional[tk.Event] = None) -> str:
+            bridge.close_session(token)
+            if dialog.winfo_exists():
+                dialog.destroy()
+            self._ibd_dialog = None
+            return "break"
+
+        def poll() -> None:
+            if not dialog.winfo_exists():
+                return
+            for action, data in bridge.take_events(token):
+                if action == "save" and data:
+                    self._apply_ibd(nodes_ref, node_id, data)
+                finish()
+                return
+            dialog.after(250, poll)
+
+        buttons = tk.Frame(dialog)
+        buttons.pack(fill="x", padx=16, pady=14)
+        ttk.Button(buttons, text="Abbrechen", command=finish).pack(side="right")
+        ttk.Button(buttons, text="Im Browser erneut öffnen",
+                   command=lambda: webbrowser.open(url)).pack(side="right", padx=(0, 6))
+        dialog.protocol("WM_DELETE_WINDOW", finish)
+        dialog.bind("<Escape>", finish)
+        try:
+            dialog.grab_set()      # PAP sperren, bis der IBD-Editor fertig ist
+        except tk.TclError:
+            pass
+        webbrowser.open(url)
+        poll()
+
+    def _apply_ibd(self, nodes_ref: Dict[int, Node], node_id: int, data: dict) -> None:
+        """Ergebnis des IBD-Editors am Infofluss-Block speichern."""
+        node = self.nodes.get(node_id)
+        if nodes_ref is not self.nodes or not is_info(node):
+            messagebox.showwarning("Informationsfluss", "Der Infofluss-Block ist nicht mehr vorhanden – "
+                                                        "der Informationsfluss wurde nicht übernommen.")
+            return
+        svg, png = data.get("svg"), data.get("png")
+        self._push_undo()
+        node.ibd = data["diagram"]
+        node.ibd_svg = svg if isinstance(svg, str) else ""
+        node.ibd_png = png if isinstance(png, str) and png.startswith("data:image/png;base64,") else ""
+        self._redraw()
+        self._flash_status("✓ Informationsfluss übernommen")
+
+    def _write_ibd_images(self, path: str, fmt: str) -> None:
+        """Zu jedem Infofluss der aktuellen Ebene das IBD als eigene Bilddatei neben path."""
+        infos = [n for n in self.nodes.values() if is_info(n) and (n.ibd_png if fmt != "svg" else n.ibd_svg)]
+        failed = []
+        for i, node in enumerate(infos):
+            target = ibd_path(path, i, len(infos), ".svg" if fmt == "svg" else os.path.splitext(path)[1] or f".{fmt}")
+            try:
+                if fmt == "svg":
+                    with open(target, "w", encoding="utf-8") as handle:
+                        handle.write(node.ibd_svg)
+                    continue
+                image = Image.open(io.BytesIO(base64.b64decode(node.ibd_png.split(",", 1)[1])))
+                if fmt == "jpeg":
+                    flat = Image.new("RGB", image.size, (255, 255, 255))
+                    image = image.convert("RGBA")
+                    flat.paste(image, mask=image.getchannel("A"))
+                    flat.save(target, quality=95)
+                else:
+                    image.save(target)
+            except (OSError, ValueError, IndexError) as err:
+                failed.append(f"{os.path.basename(target)}: {err}")
+        if failed:
+            messagebox.showerror("Informationsfluss", "Bild des Informationsflusses nicht gespeichert:\n" + "\n".join(failed))
+
     def on_canvas_motion(self, event: tk.Event) -> None:
         if self.connection_source:
             self._update_temp_arrow(event)
@@ -2262,6 +2650,8 @@ class PapEditor(tk.Tk):
         der Raute). Reihenfolge: Anschluss unter dem Zeiger → Pfeil kommt aus
         einem seitlichen Anschluss → Quelle liegt rechts vom Ziel → oben belegt.
         Identisch zu bestTgtPort() in web/static/pap.js."""
+        if is_info(source):
+            return "left"
         if shape_of(target) not in ("diamond", "connector"):
             return "top"
         occupied = self._occupied_ports()
@@ -2533,6 +2923,11 @@ class PapEditor(tk.Tk):
             self.current_file = path
         try:
             self._write_json(self.current_file)
+            # Informationsfluesse zusaetzlich als eigene Datei – direkt im IBD-Editor ladbar
+            infos = collect_ibds(self._state_payload()["nodes"])
+            for i, item in enumerate(infos):
+                with open(ibd_path(self.current_file, i, len(infos), ".json"), "w", encoding="utf-8") as handle:
+                    json.dump(item["ibd"], handle, ensure_ascii=False, indent=2)
         except OSError as err:
             messagebox.showerror("Speichern fehlgeschlagen", str(err))
             return
@@ -2573,7 +2968,7 @@ class PapEditor(tk.Tk):
 
     NODE_KEY_MAP = {"imageRel": "image_rel", "templateLabel": "template_label",
                     "textAnchor": "text_anchor", "manualWidth": "manual_width",
-                    "fontSize": "font_size"}
+                    "fontSize": "font_size", "ibdSvg": "ibd_svg", "ibdPng": "ibd_png"}
     ARROW_KEY_MAP = {"sourceId": "source_id", "sourcePort": "source_port",
                      "targetId": "target_id", "targetPort": "target_port"}
 
@@ -2750,6 +3145,7 @@ class PapEditor(tk.Tk):
             image.save(path, quality=95)
         else:
             image.save(path)
+        self._write_ibd_images(path, fmt)
 
     # ---- SVG (Vektor) für Affinity & Co. -------------------------------
     def copy_svg(self, event: Optional[tk.Event] = None) -> str:
@@ -2772,6 +3168,7 @@ class PapEditor(tk.Tk):
             return
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(svg)
+        self._write_ibd_images(path, "svg")
         self._update_status()
 
     def render_to_svg(self, node_ids: Set[int]) -> Optional[str]:

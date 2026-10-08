@@ -29,6 +29,9 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
   ihn am Raster, Doppel-/Rechtsklick auf den Knick entfernt ihn
 - Speichern und Laden als JSON
 - Export als PNG und JPG
+- Informationsfluss: grauer Baustein "Infofluss" links neben dem Start, verbunden
+  per Pfeil an die linke Seite des Starts. Doppelklick oeffnet den IBD-Editor
+  (siehe unten "Informationsfluss (IBD)")
 - Validierung gegen ungueltige Verbindungen wie Rueckspruenge nach oben oder Zyklen
 - Ausfuehrliche Plausibilitaetspruefung nach einem festen Regelkatalog (Button "Pruefen")
 
@@ -95,6 +98,29 @@ bash start_pap.sh
 ```
 
 In VS Code kannst du auch direkt die Aufgabe "Start PAP Editor" ausfuehren oder die Run-Konfiguration "PAP Editor starten" mit F5 starten.
+
+## Informationsfluss (IBD)
+
+Der Baustein "Infofluss" verknuepft den PAP mit einem Informationsfluss-
+Blockdiagramm aus dem IBD-Editor (https://ibd.mint-checker.de, `?embed=1`).
+
+- Er hat nur einen Anschluss rechts und laesst sich nur mit der linken Seite des
+  Start-Blocks verbinden. Die Plausibilitaetspruefung blendet ihn samt Pfeil aus.
+- Doppelklick (oder Rechtsklick -> "Informationsfluss oeffnen ...") oeffnet den
+  IBD-Editor; "In Projekt uebernehmen" speichert am Block `ibd` (IBD-Datei),
+  `ibdSvg`/`ibd_svg` und `ibdPng`/`ibd_png` (PNG als data:-URL, damit auch die
+  Desktop-Version ohne SVG-Renderer exportieren kann).
+- Speichern legt zusaetzlich `<name>_ibd.json` ab (im IBD-Editor ladbar),
+  PNG/JPG/SVG-Export zusaetzlich `<name>_ibd.png|jpg|svg`. Bei mehreren
+  Infofluss-Bloecken: `_ibd_2`, `_ibd_3` ...
+- Web: Der IBD-Editor laeuft als iframe-Overlay ueber dem PAP (gleiches
+  postMessage-Protokoll wie unten, Quelle `ibd-editor`, Origin wird geprueft).
+- Desktop: Tkinter kann keine Webseite anzeigen. Der Editor startet daher einen
+  kleinen Webserver auf `127.0.0.1` (zufaelliger Port, zufaelliges Token je
+  Sitzung) und oeffnet im Standardbrowser eine Seite, die den IBD-Editor einbettet
+  und das Ergebnis per POST zurueckschickt (`IbdBridge` in `pap_editor.py`).
+  Dafuer ist eine Internetverbindung noetig.
+- Im Einbettungsmodus (`?embed=1`) gibt es den Baustein nicht.
 
 ## Einbettung in andere Web-Apps (`?embed=1`)
 
