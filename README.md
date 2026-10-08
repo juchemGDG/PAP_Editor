@@ -29,7 +29,7 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
   ihn am Raster, Doppel-/Rechtsklick auf den Knick entfernt ihn
 - Speichern und Laden als JSON
 - Export als PNG und JPG
-- Informationsfluss: grauer Baustein "Infofluss" links neben dem Start, verbunden
+- Informationsfluss: hellblauer Baustein "Infofluss" links neben dem Start, verbunden
   per Pfeil an die linke Seite des Starts. Doppelklick oeffnet den IBD-Editor
   (siehe unten "Informationsfluss (IBD)")
 - Validierung gegen ungueltige Verbindungen wie Rueckspruenge nach oben oder Zyklen

@@ -54,7 +54,7 @@ NODE_STYLE = {
     "Verzweigung zu": ("#ffffff", NODE_BORDER),
     "Schleife":       ("#fdcb4a", NODE_BORDER),
     "Schleife zu":    ("#fdcb4a", NODE_BORDER),
-    "Infofluss":      ("#d4d4d4", NODE_BORDER),
+    "Infofluss":      ("#bfdbfe", NODE_BORDER),
 }
 DEFAULT_STYLE = ("#ffffff", NODE_BORDER)
 
@@ -83,7 +83,7 @@ NODE_TYPES = [
     ("Infofluss", "rect", ""),
 ]
 
-# Infofluss: grauer Block links neben dem Start, verweist auf ein
+# Infofluss: hellblauer Block links neben dem Start, verweist auf ein
 # Informationsfluss-Blockdiagramm (IBD), das im IBD-Editor (Browser) bearbeitet
 # wird. Nicht Teil des Ablaufs – die Plausibilitaetspruefung ignoriert ihn.
 INFO_LABEL = "Infofluss"
@@ -1166,7 +1166,7 @@ HELP_TEXT: List[Tuple[str, str]] = [
     ("li", "Oben links steht, wo du gerade bist (z. B. „Hauptprogramm › Funktion: berechne“). "
            "Zurück mit „← Zurück“ oder Esc."),
     ("h", "Informationsfluss"),
-    ("li", "Den grauen Baustein „Infofluss“ links neben den Start setzen und von seinem rechten "
+    ("li", "Den hellblauen Baustein „Infofluss“ links neben den Start setzen und von seinem rechten "
            "Anschlusspunkt einen Pfeil auf den Start ziehen."),
     ("li", "Doppelklick auf den Infofluss (oder Rechtsklick → „Informationsfluss öffnen …“) öffnet den "
            "IBD-Editor im Browser (Internetverbindung nötig). Mit „In Projekt übernehmen“ landet das "

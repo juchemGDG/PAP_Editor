@@ -22,7 +22,7 @@ const NODE_STYLE = {
   'Verzweigung zu': ['#ffffff', NODE_BORDER],
   'Schleife':       ['#fdcb4a', NODE_BORDER],
   'Schleife zu':    ['#fdcb4a', NODE_BORDER],
-  'Infofluss':      ['#d4d4d4', NODE_BORDER],
+  'Infofluss':      ['#bfdbfe', NODE_BORDER],
 };
 const DEFAULT_STYLE = ['#ffffff', NODE_BORDER];
 
@@ -52,7 +52,7 @@ const NODE_TYPES = [
 
 const UNLABELED = new Set(['connector', 'loop_end']);
 
-// Infofluss: grauer Block links neben dem Start, verweist auf ein
+// Infofluss: hellblauer Block links neben dem Start, verweist auf ein
 // Informationsfluss-Blockdiagramm (IBD), das im IBD-Editor bearbeitet wird.
 // Nicht Teil des Ablaufs – die Plausibilitätsprüfung ignoriert ihn.
 const INFO_LABEL = 'Infofluss';
