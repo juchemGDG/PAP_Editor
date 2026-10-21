@@ -286,7 +286,14 @@ function approachPoints(start, waypoints, end, tgtPort) {
   return wps;
 }
 
-function labelPos(route) {
+function labelPos(route, a) {
+  // Ja/Nein einer Entscheidung steht neben der Raute, nicht im Pfeil
+  const src = a && nodes[a.sourceId];
+  if (src && src.templateLabel === 'Entscheidung' && route.length >= 2) {
+    const [sx,sy] = route[0];
+    if (a.sourcePort === 'right')  return [sx + 8, sy - 10];
+    if (a.sourcePort === 'bottom') return [sx + 6, sy + 16];
+  }
   let bestLen = -1, best = route[Math.floor(route.length/2)];
   for (let i = 0; i < route.length-1; i++) {
     const [ax,ay] = route[i], [bx,by] = route[i+1];
@@ -501,6 +508,9 @@ function drawPorts(c, n) {
   }
 }
 
+/** Pfeile zwischen zwei markierten Bausteinen gelten als mitmarkiert. */
+function arrowInSelection(a) { return selNodes.has(a.sourceId) && selNodes.has(a.targetId); }
+
 function occupiedPorts() {
   const s = new Set();
   for (const a of Object.values(arrows)) {
@@ -513,7 +523,7 @@ function occupiedPorts() {
 function drawArrow(c, a, dashed) {
   const route = arrowRoute(a);
   if (!route || route.length < 2) return;
-  const color = a.id === selArrow ? ACCENT : ARROW_COLOR;
+  const color = (a.id === selArrow || arrowInSelection(a)) ? ACCENT : ARROW_COLOR;
   c.strokeStyle = color; c.fillStyle = color; c.lineWidth = 2;
   if (dashed) c.setLineDash([5,4]);
   c.beginPath();
@@ -524,7 +534,7 @@ function drawArrow(c, a, dashed) {
   const n = route.length;
   arrowHead(c, route[n-2][0], route[n-2][1], route[n-1][0], route[n-1][1], color);
   if (a.label) {
-    const [mx,my] = labelPos(route);
+    const [mx,my] = labelPos(route, a);
     c.fillStyle = CANVAS_BG;
     c.fillRect(mx-3, my-9, 13 + 7*a.label.length, 18);
     c.fillStyle = TEXT_COLOR;
@@ -769,6 +779,8 @@ function addArrow(srcId, srcPort, tgtId, tgtPort) {
   if (hasPath(tgtId, srcId)) return null;
   const a = { id: nextAid++, sourceId: srcId, sourcePort: srcPort,
               targetId: tgtId, targetPort: tgtPort, waypoints: [], label: '' };
+  if (s.templateLabel === 'Entscheidung')
+    a.label = ({right: 'Ja', bottom: 'Nein'})[srcPort] || '';
   // Liegt das Ziel weiter oben, wird ein Weg außen herum vorbelegt; die
   // Knickpunkte lassen sich anschließend am Raster verschieben.
   if (t.y < s.y) a.waypoints = backJumpWaypoints(s, srcPort, t, tgtPort);
@@ -1715,7 +1727,7 @@ function renderOffscreen(cb) {
     const r = arrowRoute(a); if (!r) continue;
     for (const [x,y] of r) { xs.push(x); ys.push(y); }
     if (a.label) {
-      const [mx,my] = labelPos(r);
+      const [mx,my] = labelPos(r, a);
       xs.push(mx + 4 + 8*a.label.length); ys.push(my - 16);
     }
   }
@@ -1886,7 +1898,7 @@ function buildSVG(nodeIds) {
     const r = routes[a.id]; if (!r) continue;
     out.push(`<polyline points="${r.map(([x,y])=>`${tx(x)},${ty(y)}`).join(' ')}" fill="none" stroke="#111111" stroke-width="2" marker-end="url(#arr)"/>`);
     if (a.label) {
-      const [mx,my] = labelPos(r);
+      const [mx,my] = labelPos(r, a);
       out.push(`<text x="${(+tx(mx)+4).toFixed(1)}" y="${(+ty(my)-4).toFixed(1)}" font-family="Helvetica" font-size="12" fill="#111111">${xmlEsc(a.label)}</text>`);
     }
   }
@@ -2040,6 +2052,8 @@ function pointerMove(clientX, clientY) {
       if (dx||dy) {
         dragMoved = true;
         for (const id of selNodes) if(nodes[id]) { nodes[id].x+=dx; nodes[id].y+=dy; }
+        for (const a of Object.values(arrows))
+          if (arrowInSelection(a)) for (const p of a.waypoints) { p[0]+=dx; p[1]+=dy; }
       }
       redraw();
     } else if (dragState.type === 'bend') {

@@ -1865,7 +1865,15 @@ class PapEditor(tk.Tk):
         points = approach_points(start, list(arrow.waypoints), end, arrow.target_port)
         return orthogonal_points(start, arrow.source_port, points, end, arrow.target_port)
 
-    def _arrow_label_pos(self, route: List[Tuple[float, float]]) -> Tuple[float, float]:
+    def _arrow_label_pos(self, route: List[Tuple[float, float]], arrow: Optional[Arrow] = None) -> Tuple[float, float]:
+        # Ja/Nein einer Entscheidung steht neben der Raute, nicht im Pfeil
+        source = self.nodes.get(arrow.source_id) if arrow else None
+        if source is not None and source.template_label == "Entscheidung" and len(route) >= 2:
+            sx, sy = route[0]
+            if arrow.source_port == "right":
+                return sx + 8, sy - 10
+            if arrow.source_port == "bottom":
+                return sx + 6, sy + 16
         # midpoint of the longest segment reads best for a right-angled path
         best_len, best = -1.0, route[len(route) // 2]
         for (ax, ay), (bx, by) in zip(route, route[1:]):
@@ -1874,15 +1882,18 @@ class PapEditor(tk.Tk):
                 best_len, best = seg, ((ax + bx) / 2, (ay + by) / 2)
         return best
 
+    def _arrow_in_selection(self, arrow: Arrow) -> bool:
+        return arrow.source_id in self.selected_node_ids and arrow.target_id in self.selected_node_ids
+
     def _draw_arrow(self, arrow: Arrow, dashed: bool = False) -> None:
         route = self._arrow_route(arrow)
         if not route:
             return
-        color = HIGHLIGHT if arrow.id == self.selected_arrow_id else ARROW_COLOR
+        color = HIGHLIGHT if arrow.id == self.selected_arrow_id or self._arrow_in_selection(arrow) else ARROW_COLOR
         flat = [coord for point in route for coord in point]
         self.canvas.create_line(*flat, fill=color, width=2, arrow="last", smooth=False, dash=(5, 4) if dashed else None)
         if arrow.label:
-            mx, my = self._arrow_label_pos(route)
+            mx, my = self._arrow_label_pos(route, arrow)
             self.canvas.create_rectangle(mx - 3, my - 9, mx + 6 + 7 * len(arrow.label), my + 9, fill=CANVAS_BG, outline="")
             self.canvas.create_text(mx, my, text=arrow.label, fill=TEXT_COLOR, font=("Helvetica", 10, "bold"), anchor="w")
         if arrow.id == self.selected_arrow_id:
@@ -2051,6 +2062,8 @@ class PapEditor(tk.Tk):
         if self._has_path(target_id, source_id):
             return None
         arrow = Arrow(self.next_arrow_id, source_id, source_port, target_id, target_port)
+        if source.template_label == "Entscheidung":
+            arrow.label = {"right": "Ja", "bottom": "Nein"}.get(source_port, "")
         # Liegt das Ziel weiter oben, wird ein Weg aussen herum vorbelegt; die
         # Knickpunkte lassen sich anschliessend am Raster verschieben.
         if target.y < source.y:
@@ -2265,6 +2278,9 @@ class PapEditor(tk.Tk):
                     if nid in self.nodes:
                         self.nodes[nid].x += dx
                         self.nodes[nid].y += dy
+                for arrow in self.arrows.values():
+                    if self._arrow_in_selection(arrow):
+                        arrow.waypoints = [(wx + dx, wy + dy) for wx, wy in arrow.waypoints]
             self._redraw()
         elif self.connection_source:
             self._update_temp_arrow(event)
@@ -3234,7 +3250,7 @@ class PapEditor(tk.Tk):
             pts = " ".join(f"{tx(x)},{ty(y)}" for x, y in route)
             out.append(f'<polyline points="{pts}" fill="none" stroke="#111111" stroke-width="2" marker-end="url(#arrow)"/>')
             if a.label:
-                mx, my = self._arrow_label_pos(route)
+                mx, my = self._arrow_label_pos(route, a)
                 out.append(f'<text x="{tx(mx) + 4}" y="{ty(my) - 4}" font-family="Helvetica" font-size="12" fill="#111111">{escape(a.label)}</text>')
         for node in nodes:
             out.append(self._svg_node(node, tx, ty, poly))
@@ -3295,7 +3311,7 @@ class PapEditor(tk.Tk):
             ys += [p[1] for p in route]
             label = self.arrows[arrow_id].label
             if label:
-                mx, my = self._arrow_label_pos(route)
+                mx, my = self._arrow_label_pos(route, self.arrows[arrow_id])
                 xs.append(mx + 4 + 8 * len(label))
                 ys.append(my - 12)
         pad = 48
@@ -3318,7 +3334,7 @@ class PapEditor(tk.Tk):
             draw.line(flat, fill="#111111", width=3, joint="curve")
             self._draw_arrow_head(draw, flat[-4], flat[-3], flat[-2], flat[-1])
             if arrow.label:
-                mx, my = self._arrow_label_pos(route)
+                mx, my = self._arrow_label_pos(route, arrow)
                 draw.text((mx - ox + 4, my - oy - 9), arrow.label, fill="#111111", font=small_font)
         for node in self.nodes.values():
             fill, border = NODE_STYLE.get(node.template_label, DEFAULT_STYLE)
