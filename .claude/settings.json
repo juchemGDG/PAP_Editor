@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk 'NR>0')",
+      "Bash(python3 -c \"import ast;ast.parse\\(open\\('pap_editor.py'\\).read\\(\\)\\)\")",
+      "Bash(sed -i '' 's/pap.js?v=18/pap.js?v=19/' web/static/index.html)",
+      "Bash(sed -i '' 's/AppVersion=1.4.0/AppVersion=1.4.1/' packaging/pap_editor.iss)"
+    ]
+  }
+}
