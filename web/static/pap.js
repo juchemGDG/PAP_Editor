@@ -18,7 +18,7 @@ const NODE_STYLE = {
   'Stop':           ['#b3b3b3', NODE_BORDER],
   'Funktion':       ['#ec4f71', NODE_BORDER],
   'Anweisung':      ['#ec4f71', NODE_BORDER],
-  'Entscheidung':   ['#5ecf87', NODE_BORDER],
+  'Verzweigung':   ['#5ecf87', NODE_BORDER],
   'Verzweigung zu': ['#ffffff', NODE_BORDER],
   'Schleife':       ['#fdcb4a', NODE_BORDER],
   'Schleife zu':    ['#fdcb4a', NODE_BORDER],
@@ -31,7 +31,7 @@ const NODE_SHAPE = {
   'Stop':           'terminator',
   'Funktion':       'subroutine',
   'Anweisung':      'rect',
-  'Entscheidung':   'diamond',
+  'Verzweigung':   'diamond',
   'Verzweigung zu': 'connector',
   'Schleife':       'loop_start',
   'Schleife zu':    'loop_end',
@@ -43,7 +43,7 @@ const NODE_TYPES = [
   { label: 'Stop',           kind: 'terminator', rel: 'Bilder/Stop.png'           },
   { label: 'Funktion',       kind: 'subroutine', rel: 'Bilder/Funktion.png'       },
   { label: 'Anweisung',      kind: 'rect',       rel: 'Bilder/Anweisung.png'      },
-  { label: 'Entscheidung',   kind: 'diamond',    rel: 'Bilder/Verzweigung_auf.png'},
+  { label: 'Verzweigung',   kind: 'diamond',    rel: 'Bilder/Verzweigung_auf.png'},
   { label: 'Verzweigung zu', kind: 'connector',  rel: 'Bilder/Verzweigung_zu.png' },
   { label: 'Schleife',       kind: 'loop_start', rel: 'Bilder/Schleife_auf.png'   },
   { label: 'Schleife zu',    kind: 'loop_end',   rel: 'Bilder/Schleife_zu.png'    },
@@ -287,9 +287,9 @@ function approachPoints(start, waypoints, end, tgtPort) {
 }
 
 function labelPos(route, a) {
-  // Ja/Nein einer Entscheidung steht neben der Raute, nicht im Pfeil
+  // Ja/Nein einer Verzweigung steht neben der Raute, nicht im Pfeil
   const src = a && nodes[a.sourceId];
-  if (src && src.templateLabel === 'Entscheidung' && route.length >= 2) {
+  if (src && src.templateLabel === 'Verzweigung' && route.length >= 2) {
     const [sx,sy] = route[0];
     if (a.sourcePort === 'right')  return [sx + 8, sy - 10];
     if (a.sourcePort === 'bottom') return [sx + 6, sy + 16];
@@ -779,7 +779,7 @@ function addArrow(srcId, srcPort, tgtId, tgtPort) {
   if (hasPath(tgtId, srcId)) return null;
   const a = { id: nextAid++, sourceId: srcId, sourcePort: srcPort,
               targetId: tgtId, targetPort: tgtPort, waypoints: [], label: '' };
-  if (s.templateLabel === 'Entscheidung')
+  if (s.templateLabel === 'Verzweigung')
     a.label = ({right: 'Ja', bottom: 'Nein'})[srcPort] || '';
   // Liegt das Ziel weiter oben, wird ein Weg außen herum vorbelegt; die
   // Knickpunkte lassen sich anschließend am Raster verschieben.
@@ -876,10 +876,27 @@ function statePayload() {
   };
 }
 
+/** Ältere Dateien: Baustein "Entscheidung" heißt jetzt "Verzweigung" (auch in Unterablaufplänen). */
+function migrateLegacyNode(n) {
+  if ((n.templateLabel || n.template_label) === 'Entscheidung') {
+    if (n.template_label !== undefined) n.template_label = 'Verzweigung';
+    else n.templateLabel = 'Verzweigung';
+    if (n.label === 'Entscheidung') n.label = 'Verzweigung';
+  }
+  if (n.subdiagram) {
+    try {
+      const sub = JSON.parse(n.subdiagram);
+      (sub.nodes || []).forEach(migrateLegacyNode);
+      n.subdiagram = JSON.stringify(sub);
+    } catch (e) { /* beschädigt: R36 meldet das */ }
+  }
+}
+
 function loadPayload(p) {
   nodes = {}; arrows = {};
   for (const item of (p.nodes || [])) {
     const n = {...item};
+    migrateLegacyNode(n);
     // Kompatibilität desktop ↔ web (snake_case → camelCase)
     for (const [snake, camel] of [['image_rel','imageRel'], ['template_label','templateLabel'],
                                   ['text_anchor','textAnchor'], ['manual_width','manualWidth'],
@@ -1018,7 +1035,7 @@ function updateCtxUI() {
 
 const ROLE_BY_TEMPLATE = {
   'Start': 'start', 'Stop': 'stop', 'Anweisung': 'process', 'Funktion': 'subprocess',
-  'Entscheidung': 'decision', 'Verzweigung zu': 'branchEnd', 'Schleife': 'loopStart', 'Schleife zu': 'loopEnd',
+  'Verzweigung': 'decision', 'Verzweigung zu': 'branchEnd', 'Schleife': 'loopStart', 'Schleife zu': 'loopEnd',
 };
 function roleOf(n) { return ROLE_BY_TEMPLATE[n.templateLabel] || 'process'; }
 

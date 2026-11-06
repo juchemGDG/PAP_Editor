@@ -50,7 +50,7 @@ NODE_STYLE = {
     "Stop":           ("#b3b3b3", NODE_BORDER),
     "Funktion":       ("#ec4f71", NODE_BORDER),
     "Anweisung":      ("#ec4f71", NODE_BORDER),
-    "Entscheidung":   ("#5ecf87", NODE_BORDER),
+    "Verzweigung":   ("#5ecf87", NODE_BORDER),
     "Verzweigung zu": ("#ffffff", NODE_BORDER),
     "Schleife":       ("#fdcb4a", NODE_BORDER),
     "Schleife zu":    ("#fdcb4a", NODE_BORDER),
@@ -64,7 +64,7 @@ NODE_SHAPE = {
     "Stop":           "terminator",
     "Funktion":       "subroutine",
     "Anweisung":      "rect",
-    "Entscheidung":   "diamond",
+    "Verzweigung":   "diamond",
     "Verzweigung zu": "connector",
     "Schleife":       "loop_start",
     "Schleife zu":    "loop_end",
@@ -76,7 +76,7 @@ NODE_TYPES = [
     ("Stop", "terminator", "Bilder/Stop.png"),
     ("Funktion", "subroutine", "Bilder/Funktion.png"),
     ("Anweisung", "rect", "Bilder/Anweisung.png"),
-    ("Entscheidung", "diamond", "Bilder/Verzweigung_auf.png"),
+    ("Verzweigung", "diamond", "Bilder/Verzweigung_auf.png"),
     ("Verzweigung zu", "connector", "Bilder/Verzweigung_zu.png"),
     ("Schleife", "loop_start", "Bilder/Schleife_auf.png"),
     ("Schleife zu", "loop_end", "Bilder/Schleife_zu.png"),
@@ -418,7 +418,7 @@ ROLE_BY_TEMPLATE = {
     "Stop": "stop",
     "Anweisung": "process",
     "Funktion": "subprocess",
-    "Entscheidung": "decision",
+    "Verzweigung": "decision",
     "Verzweigung zu": "branchEnd",
     "Schleife": "loopStart",
     "Schleife zu": "loopEnd",
@@ -1866,9 +1866,9 @@ class PapEditor(tk.Tk):
         return orthogonal_points(start, arrow.source_port, points, end, arrow.target_port)
 
     def _arrow_label_pos(self, route: List[Tuple[float, float]], arrow: Optional[Arrow] = None) -> Tuple[float, float]:
-        # Ja/Nein einer Entscheidung steht neben der Raute, nicht im Pfeil
+        # Ja/Nein einer Verzweigung steht neben der Raute, nicht im Pfeil
         source = self.nodes.get(arrow.source_id) if arrow else None
-        if source is not None and source.template_label == "Entscheidung" and len(route) >= 2:
+        if source is not None and source.template_label == "Verzweigung" and len(route) >= 2:
             sx, sy = route[0]
             if arrow.source_port == "right":
                 return sx + 8, sy - 10
@@ -2062,7 +2062,7 @@ class PapEditor(tk.Tk):
         if self._has_path(target_id, source_id):
             return None
         arrow = Arrow(self.next_arrow_id, source_id, source_port, target_id, target_port)
-        if source.template_label == "Entscheidung":
+        if source.template_label == "Verzweigung":
             arrow.label = {"right": "Ja", "bottom": "Nein"}.get(source_port, "")
         # Liegt das Ziel weiter oben, wird ein Weg aussen herum vorbelegt; die
         # Knickpunkte lassen sich anschliessend am Raster verschieben.
@@ -3014,13 +3014,32 @@ class PapEditor(tk.Tk):
     ARROW_KEY_MAP = {"sourceId": "source_id", "sourcePort": "source_port",
                      "targetId": "target_id", "targetPort": "target_port"}
 
+    @classmethod
+    def _migrate_legacy_node(cls, item: dict) -> None:
+        """Ältere Dateien: Baustein "Entscheidung" heißt jetzt "Verzweigung" (auch in Unterablaufplänen)."""
+        for key in ("template_label", "templateLabel"):
+            if item.get(key) == "Entscheidung":
+                item[key] = "Verzweigung"
+                if item.get("label") == "Entscheidung":
+                    item["label"] = "Verzweigung"
+        if item.get("subdiagram"):
+            try:
+                sub = json.loads(item["subdiagram"])
+                for sub_item in sub.get("nodes", []):
+                    cls._migrate_legacy_node(sub_item)
+                item["subdiagram"] = json.dumps(sub, ensure_ascii=False)
+            except (ValueError, TypeError, AttributeError):
+                pass    # beschädigt: meldet R36
+
     def _load_payload(self, payload: dict) -> None:
         self.nodes.clear()
         self.arrows.clear()
         node_fields = set(Node.__dataclass_fields__)
         arrow_fields = set(Arrow.__dataclass_fields__)
         for item in payload.get("nodes", []):
-            node = Node(**self._normalize_item(item, self.NODE_KEY_MAP, node_fields))
+            item = dict(item)
+            self._migrate_legacy_node(item)
+            node =Node(**self._normalize_item(item, self.NODE_KEY_MAP, node_fields))
             self.nodes[node.id] = node
         for item in payload.get("arrows", []):
             arrow = Arrow(**self._normalize_item(item, self.ARROW_KEY_MAP, arrow_fields))
