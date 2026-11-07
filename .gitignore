@@ -6,3 +6,8 @@ build/windows/
 
 # Python-Cache
 __pycache__/
+
+# Systemdateien und Build-Ausgaben nicht einchecken
+.DS_Store
+dist/
+build/pap_editor/
