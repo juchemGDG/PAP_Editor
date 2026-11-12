@@ -1733,11 +1733,71 @@ function exportJPG() {
   renderOffscreen(oc => oc.toBlob(b => { downloadBlob(b,'diagramm.jpg'); exportIbdImages('jpg'); },'image/jpeg',0.95),'image/jpeg');
 }
 
-function renderOffscreen(cb) {
+// ────── Gesamtbild: Hauptprogramm + alle Funktionen ─────
+// Bild-Export und "In Projekt übernehmen" zeigen immer den kompletten PAP:
+// Hauptprogramm und jede Funktion (auch verschachtelte) nebeneinander, jeweils
+// mit Überschrift. Ohne Funktionen bleibt es beim einzelnen Bild ohne Titel.
+const EXPORT_PAD   = 40;    // Rand um jeden Ablaufplan
+const TITLE_H      = 44;    // Höhe der Überschriftenzeile
+const TITLE_SIZE   = 18;
+const TITLE_FONT   = `bold ${TITLE_SIZE}px Helvetica,Arial,sans-serif`;
+const DIVIDER_COLOR = '#cbd5e1';
+
+/** Hauptprogramm als Datensatz, auch wenn gerade eine Funktion geöffnet ist (ändert nichts am Zustand). */
+function rootPayload() {
+  let p = statePayload();
+  for (let i = ctxStack.length - 1; i >= 0; i--) {
+    const fr = ctxStack[i], sub = JSON.stringify(p);
+    p = {
+      nodes:  Object.values(fr.nodes).map(n => n.id === fr.node.id ? {...n, subdiagram: sub} : {...n}),
+      arrows: Object.values(fr.arrows).filter(a => a.id !== -1),
+    };
+  }
+  return p;
+}
+
+/** Datensatz in eigene nodes/arrows-Objekte umwandeln, ohne die geöffnete Ebene anzutasten. */
+function sceneOf(p) {
+  const saved = [nodes, arrows, nextNid, nextAid];
+  try { loadPayload(p); return { nodes, arrows }; }
+  finally { [nodes, arrows, nextNid, nextAid] = saved; }
+}
+
+/** fn() mit den Bausteinen/Pfeilen einer Szene als "aktuelle Ebene" ausführen. */
+function withScene(sc, fn) {
+  const saved = [nodes, arrows];
+  nodes = sc.nodes; arrows = sc.arrows;
+  try { return fn(); }
+  finally { [nodes, arrows] = saved; }
+}
+
+/** Alle Ablaufpläne zum Export: Hauptprogramm, dann die Funktionen (von oben nach unten). */
+function exportSections() {
+  const out = [], seen = new Set();
+  (function walk(p, title) {
+    const sc = sceneOf(p);
+    if (!Object.keys(sc.nodes).length) return;
+    out.push({ title, ...sc });
+    const fns = Object.values(sc.nodes)
+      .filter(n => n.templateLabel === 'Funktion' && n.subdiagram)
+      .sort((a, b) => a.y - b.y || a.x - b.x);
+    for (const n of fns) {
+      const name = String(n.label || '').replace(/\s+/g, ' ').trim() || 'unbenannt';
+      const key = name + '\u0000' + n.subdiagram;   // gleiche Funktion mehrfach aufgerufen → nur einmal
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let sub;
+      try { sub = JSON.parse(n.subdiagram); } catch (e) { continue; }   // beschädigt: R36 meldet das
+      walk(sub, `Funktion: ${name}`);
+    }
+  })(rootPayload(), 'Hauptprogramm');
+  return out;
+}
+
+/** Ausschnitt der aktuellen Ebene aus Bausteinen UND Pfeilverläufen – sonst werden
+ *  Umbrüche nach rechts/links (über/unter den Bausteinen) abgeschnitten. */
+function sceneBounds() {
   const ns = Object.values(nodes);
-  if (!ns.length) { alert('Keine Elemente zum Exportieren.'); return; }
-  // Ausschnitt aus Bausteinen UND Pfeilverläufen, sonst werden Umbrüche
-  // nach rechts/links (die über/unter den Bausteinen verlaufen) abgeschnitten
   const xs = ns.flatMap(n=>[n.x-n.width/2, n.x+n.width/2]);
   const ys = ns.flatMap(n=>[n.y-n.height/2, n.y+n.height/2]);
   for (const a of Object.values(arrows)) {
@@ -1748,32 +1808,74 @@ function renderOffscreen(cb) {
       xs.push(mx + 4 + 8*a.label.length); ys.push(my - 16);
     }
   }
-  const pad = 48;
-  const minX = Math.min(...xs) - pad;
-  const minY = Math.min(...ys) - pad;
-  const maxX = Math.max(...xs) + pad;
-  const maxY = Math.max(...ys) + pad;
-  const W = maxX-minX, H = maxY-minY;
+  return { minX: Math.min(...xs) - EXPORT_PAD, minY: Math.min(...ys) - EXPORT_PAD,
+           maxX: Math.max(...xs) + EXPORT_PAD, maxY: Math.max(...ys) + EXPORT_PAD };
+}
+
+/**
+ * Abschnitte nebeneinander anordnen. Jeder Abschnitt erhält
+ *   ox/w: Spalte im Gesamtbild, dx/dy: Verschiebung Welt → Bild.
+ */
+function layoutSections(secs) {
+  const titled = secs.length > 1;
+  const mc = measureCtx(null); mc.font = TITLE_FONT;
+  let x = 0, H = 0;
+  for (const s of secs) {
+    const b  = withScene(s, sceneBounds);
+    const bw = b.maxX - b.minX, bh = b.maxY - b.minY;
+    const top = titled ? TITLE_H : 0;
+    s.w  = titled ? Math.max(bw, mc.measureText(s.title).width + 2*EXPORT_PAD) : bw;
+    s.ox = x;
+    s.dx = x + (s.w - bw)/2 - b.minX;   // Ablaufplan mittig unter der Überschrift
+    s.dy = top - b.minY;
+    x += s.w;
+    H = Math.max(H, top + bh);
+  }
+  return { W: x, H, titled };
+}
+
+function renderOffscreen(cb) {
+  const secs = exportSections();
+  if (!secs.length) { alert('Keine Elemente zum Exportieren.'); return; }
+  const { W, H, titled } = layoutSections(secs);
   const sc = 2;   // 2× für scharfe Ausgabe
   const oc = document.createElement('canvas');
-  oc.width = W*sc; oc.height = H*sc;
+  oc.width = Math.ceil(W*sc); oc.height = Math.ceil(H*sc);
   const oc2 = oc.getContext('2d');
   oc2.scale(sc, sc);
   oc2.fillStyle = '#ffffff'; oc2.fillRect(0,0,W,H);
-  oc2.translate(-minX, -minY);
 
   // Zeichne mit temporärem ctx-Swap
   const savedCtx = ctx, savedSel = selNodes, savedArrow = selArrow;
   ctx = oc2; selNodes = new Set(); selArrow = null;
-  for (const a of Object.values(arrows)) drawArrow(oc2, a, false);
-  for (const n of Object.values(nodes))  drawNode(oc2, n);
-  ctx = savedCtx; selNodes = savedSel; selArrow = savedArrow;
+  try {
+    secs.forEach((s, i) => {
+      if (titled) {
+        if (i) {
+          oc2.strokeStyle = DIVIDER_COLOR; oc2.lineWidth = 1;
+          oc2.beginPath(); oc2.moveTo(s.ox, 16); oc2.lineTo(s.ox, H-16); oc2.stroke();
+        }
+        oc2.fillStyle = TEXT_COLOR; oc2.font = TITLE_FONT;
+        oc2.textAlign = 'center'; oc2.textBaseline = 'middle';
+        oc2.fillText(s.title, s.ox + s.w/2, TITLE_H/2 + 8);
+      }
+      oc2.save();
+      oc2.translate(s.dx, s.dy);
+      withScene(s, () => {
+        for (const a of Object.values(arrows)) drawArrow(oc2, a, false);
+        for (const n of Object.values(nodes))  drawNode(oc2, n);
+      });
+      oc2.restore();
+    });
+  } finally {
+    ctx = savedCtx; selNodes = savedSel; selArrow = savedArrow;
+  }
   cb(oc);
 }
 
 // ────── SVG export ──────────────────────────────────────
 function exportSVG() {
-  const svg = buildSVG(new Set(Object.keys(nodes).map(Number)));
+  const svg = buildSVG();
   if (!svg) { alert('Keine Elemente zum Exportieren.'); return; }
   downloadBlob(new Blob([svg],{type:'image/svg+xml'}),'diagramm.svg');
   exportIbdImages('svg');
@@ -1891,35 +1993,36 @@ function onIbdMessage(e) {
   }
 }
 
-function buildSVG(nodeIds) {
-  const ns = [...nodeIds].map(id=>nodes[id]).filter(Boolean);
-  if (!ns.length) return null;
-  const as = Object.values(arrows).filter(a=>nodeIds.has(a.sourceId)&&nodeIds.has(a.targetId));
-  let xs = ns.flatMap(n=>[n.x-n.width/2, n.x+n.width/2]);
-  let ys = ns.flatMap(n=>[n.y-n.height/2, n.y+n.height/2]);
-  const routes = {};
-  for (const a of as) {
-    routes[a.id] = arrowRoute(a);
-    if (routes[a.id]) { xs.push(...routes[a.id].map(p=>p[0])); ys.push(...routes[a.id].map(p=>p[1])); }
-  }
-  const pad=24, mnx=Math.min(...xs)-pad, mny=Math.min(...ys)-pad;
-  const W=Math.max(...xs)-mnx+pad, H=Math.max(...ys)-mny+pad;
-  const tx = v=>(v-mnx).toFixed(1), ty = v=>(v-mny).toFixed(1);
+/** SVG des kompletten PAP (Hauptprogramm + Funktionen nebeneinander, siehe exportSections). */
+function buildSVG() {
+  const secs = exportSections();
+  if (!secs.length) return null;
+  const { W, H, titled } = layoutSections(secs);
+  const w = Math.ceil(W), h = Math.ceil(H);
 
   const out = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${W.toFixed(0)}" height="${H.toFixed(0)}" viewBox="0 0 ${W.toFixed(0)} ${H.toFixed(0)}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
     '<defs><marker id="arr" markerWidth="10" markerHeight="8" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">'+
     '<path d="M0,0 L8,3 L0,6 z" fill="#111111"/></marker></defs>',
   ];
-  for (const a of as) {
-    const r = routes[a.id]; if (!r) continue;
-    out.push(`<polyline points="${r.map(([x,y])=>`${tx(x)},${ty(y)}`).join(' ')}" fill="none" stroke="#111111" stroke-width="2" marker-end="url(#arr)"/>`);
-    if (a.label) {
-      const [mx,my] = labelPos(r, a);
-      out.push(`<text x="${(+tx(mx)+4).toFixed(1)}" y="${(+ty(my)-4).toFixed(1)}" font-family="Helvetica" font-size="12" fill="#111111">${xmlEsc(a.label)}</text>`);
+  secs.forEach((s, i) => {
+    if (titled) {
+      if (i) out.push(`<line x1="${s.ox.toFixed(1)}" y1="16" x2="${s.ox.toFixed(1)}" y2="${(H-16).toFixed(1)}" stroke="${DIVIDER_COLOR}" stroke-width="1"/>`);
+      out.push(`<text x="${(s.ox + s.w/2).toFixed(1)}" y="${(TITLE_H/2 + 8).toFixed(1)}" font-family="Helvetica" font-size="${TITLE_SIZE}" font-weight="bold" text-anchor="middle" dominant-baseline="central" fill="${TEXT_COLOR}">${xmlEsc(s.title)}</text>`);
     }
-  }
-  for (const n of ns) out.push(svgNode(n,tx,ty));
+    const tx = v=>(v+s.dx).toFixed(1), ty = v=>(v+s.dy).toFixed(1);
+    withScene(s, () => {
+      for (const a of Object.values(arrows)) {
+        const r = arrowRoute(a); if (!r) continue;
+        out.push(`<polyline points="${r.map(([x,y])=>`${tx(x)},${ty(y)}`).join(' ')}" fill="none" stroke="#111111" stroke-width="2" marker-end="url(#arr)"/>`);
+        if (a.label) {
+          const [mx,my] = labelPos(r, a);
+          out.push(`<text x="${(+tx(mx)+4).toFixed(1)}" y="${(+ty(my)-4).toFixed(1)}" font-family="Helvetica" font-size="12" fill="#111111">${xmlEsc(a.label)}</text>`);
+        }
+      }
+      for (const n of Object.values(nodes)) out.push(svgNode(n,tx,ty));
+    });
+  });
   out.push('</svg>');
   return out.join('\n');
 }
@@ -2849,6 +2952,7 @@ function init() {
 //   Editor -> Host:  {source:'pap-editor', event:'ready'}
 //   Host -> Editor:  {target:'pap-editor', action:'load', diagram:<JSON wie "Speichern"|null>, title?:string}
 //   Editor -> Host:  {source:'pap-editor', event:'save', diagram:<JSON>, svg:<SVG-Text>}
+//                    (svg: Hauptprogramm und alle Funktionen nebeneinander, siehe exportSections)
 //   Editor -> Host:  {source:'pap-editor', event:'exit'}
 //   Editor -> Host:  {source:'pap-editor', event:'download', name, mime, blob:<Blob>}
 //                    (Speichern/PNG/JPG/SVG; nur wenn load downloads:true enthielt,
@@ -2886,7 +2990,7 @@ function embedSave() {
   returnToRoot();
   updateCtxUI(); redraw();
   const payload = statePayload();
-  const svg = buildSVG(new Set(Object.keys(nodes).map(Number))) || '';
+  const svg = buildSVG() || '';
   embedSend({ event: 'save', diagram: payload, svg: svg }, embedOrigin);
   embedChanged = false;
   setStatus('An das Projekt übergeben …');

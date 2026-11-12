@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import io
 import json
 import math
@@ -129,6 +130,12 @@ FONT_MAX = 36
 MIN_NODE_W = 60       # kleinste manuell einstellbare Blockbreite
 GRIP = 6              # halbe Kantenlänge des Breiten-Anfassers
 BEND_RADIUS = 5       # Radius der Knickpunkt-Anfasser
+
+# Export: Hauptprogramm und alle Funktionen nebeneinander, je mit Ueberschrift
+EXPORT_PAD = 40       # Rand um jeden Ablaufplan
+TITLE_H = 44          # Hoehe der Ueberschriftenzeile
+TITLE_SIZE = 18       # Schriftgroesse der Ueberschrift (SVG / Bildschirm)
+DIVIDER_COLOR = "#cbd5e1"
 APPROACH = 24         # Mindestlänge der Einmündung in einen Port
 PALETTE_IMAGE_BOUNDS = (96, 38)
 CANVAS_IMAGE_BOUNDS = (104, 44)
@@ -1178,7 +1185,8 @@ HELP_TEXT: List[Tuple[str, str]] = [
     ("h", "Prüfen, Speichern, Export"),
     ("li", "„Diagramm prüfen“ kontrolliert den Plan nach den PAP-Regeln (DIN 66001) und markiert die betroffenen Blöcke."),
     ("li", "Speichern/Laden als JSON-Datei – kompatibel mit der Web-Version."),
-    ("li", "Export als PNG, JPG oder SVG."),
+    ("li", "Export als PNG, JPG oder SVG. Das Bild enthält immer den ganzen PAP: Hauptprogramm und alle "
+           "Funktionen nebeneinander, jeweils mit ihrem Namen als Überschrift."),
     ("li", "Raster ein/aus und Rasterweite unten in der linken Leiste."),
 ]
 
@@ -3221,7 +3229,7 @@ class PapEditor(tk.Tk):
         return "break"
 
     def export_svg(self) -> None:
-        svg = self.render_to_svg(set(self.nodes.keys()))
+        svg = self.render_all_svg()
         if not svg:
             return
         path = filedialog.asksaveasfilename(defaultextension=".svg", filetypes=[("SVG", "*.svg")], title="Als SVG exportieren")
@@ -3232,38 +3240,23 @@ class PapEditor(tk.Tk):
         self._write_ibd_images(path, "svg")
         self._update_status()
 
-    def render_to_svg(self, node_ids: Set[int]) -> Optional[str]:
-        nodes = [self.nodes[i] for i in node_ids if i in self.nodes]
-        if not nodes:
-            return None
-        arrows = [a for a in self.arrows.values() if a.source_id in node_ids and a.target_id in node_ids]
-        xs = [n.x - n.width / 2 for n in nodes] + [n.x + n.width / 2 for n in nodes]
-        ys = [n.y - n.height / 2 for n in nodes] + [n.y + n.height / 2 for n in nodes]
-        routes = {a.id: self._arrow_route(a) for a in arrows}
-        for route in routes.values():
-            if route:
-                xs += [p[0] for p in route]
-                ys += [p[1] for p in route]
-        pad = 24
-        minx, miny = min(xs) - pad, min(ys) - pad
-        w, h = max(xs) - minx + pad, max(ys) - miny + pad
+    SVG_HEAD = ('<defs><marker id="arrow" markerWidth="10" markerHeight="8" refX="8" refY="3" '
+                'orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#111111"/></marker></defs>')
 
+    def _svg_parts(self, nodes: List[Node], arrows: List[Arrow], dx: float, dy: float) -> List[str]:
+        """SVG-Elemente der aktuellen Ebene, um (dx, dy) verschoben."""
         def tx(v: float) -> float:
-            return round(v - minx, 1)
+            return round(v + dx, 1)
 
         def ty(v: float) -> float:
-            return round(v - miny, 1)
+            return round(v + dy, 1)
 
         def poly(flat: List[float]) -> str:
             return " ".join(f"{tx(flat[i])},{ty(flat[i + 1])}" for i in range(0, len(flat), 2))
 
-        out: List[str] = [
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h:.0f}" viewBox="0 0 {w:.0f} {h:.0f}">',
-            '<defs><marker id="arrow" markerWidth="10" markerHeight="8" refX="8" refY="3" '
-            'orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#111111"/></marker></defs>',
-        ]
+        out: List[str] = []
         for a in arrows:
-            route = routes.get(a.id)
+            route = self._arrow_route(a)
             if not route:
                 continue
             pts = " ".join(f"{tx(x)},{ty(y)}" for x, y in route)
@@ -3273,8 +3266,150 @@ class PapEditor(tk.Tk):
                 out.append(f'<text x="{tx(mx) + 4}" y="{ty(my) - 4}" font-family="Helvetica" font-size="12" fill="#111111">{escape(a.label)}</text>')
         for node in nodes:
             out.append(self._svg_node(node, tx, ty, poly))
+        return out
+
+    def render_to_svg(self, node_ids: Set[int]) -> Optional[str]:
+        """SVG einer Auswahl der aktuellen Ebene (fuer "Als SVG kopieren")."""
+        nodes = [self.nodes[i] for i in node_ids if i in self.nodes]
+        if not nodes:
+            return None
+        arrows = [a for a in self.arrows.values() if a.source_id in node_ids and a.target_id in node_ids]
+        xs = [n.x - n.width / 2 for n in nodes] + [n.x + n.width / 2 for n in nodes]
+        ys = [n.y - n.height / 2 for n in nodes] + [n.y + n.height / 2 for n in nodes]
+        for a in arrows:
+            route = self._arrow_route(a)
+            if route:
+                xs += [p[0] for p in route]
+                ys += [p[1] for p in route]
+        pad = 24
+        minx, miny = min(xs) - pad, min(ys) - pad
+        w, h = max(xs) - minx + pad, max(ys) - miny + pad
+        out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h:.0f}" viewBox="0 0 {w:.0f} {h:.0f}">',
+               self.SVG_HEAD]
+        out += self._svg_parts(nodes, arrows, -minx, -miny)
         out.append("</svg>")
         return "\n".join(out)
+
+    def render_all_svg(self) -> Optional[str]:
+        """SVG des kompletten PAP: Hauptprogramm und alle Funktionen nebeneinander."""
+        sections = self._export_sections()
+        if not sections:
+            return None
+        title_font = tkfont.Font(family="Helvetica", size=TITLE_SIZE, weight="bold")
+        width, height, titled = self._layout_sections(sections, title_font.measure)
+        w, h = math.ceil(width), math.ceil(height)
+        out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">', self.SVG_HEAD]
+        for i, sec in enumerate(sections):
+            if titled:
+                if i:
+                    out.append(f'<line x1="{sec["ox"]:.1f}" y1="16" x2="{sec["ox"]:.1f}" y2="{height - 16:.1f}" '
+                               f'stroke="{DIVIDER_COLOR}" stroke-width="1"/>')
+                out.append(f'<text x="{sec["ox"] + sec["w"] / 2:.1f}" y="{TITLE_H / 2 + 8:.1f}" font-family="Helvetica" '
+                           f'font-size="{TITLE_SIZE}" font-weight="bold" text-anchor="middle" dominant-baseline="central" '
+                           f'fill="{TEXT_COLOR}">{escape(sec["title"])}</text>')
+            with self._scene(sec):
+                out += self._svg_parts(list(self.nodes.values()), list(self.arrows.values()), sec["dx"], sec["dy"])
+        out.append("</svg>")
+        return "\n".join(out)
+
+    # ---- Gesamtbild: Hauptprogramm + alle Funktionen ---------------------
+    def _root_payload(self) -> dict:
+        """Hauptprogramm als Datensatz, auch wenn gerade eine Funktion geoeffnet ist (aendert nichts am Zustand)."""
+        payload = self._state_payload()
+        for frame in reversed(self.context_stack):
+            sub = json.dumps(payload, ensure_ascii=False)
+            nodes = []
+            for node in frame["nodes"].values():
+                item = dict(node.__dict__)
+                if node.id == frame["node"].id:
+                    item["subdiagram"] = sub
+                nodes.append(item)
+            payload = {"nodes": nodes,
+                       "arrows": [dict(a.__dict__) for a in frame["arrows"].values() if a.id != -1]}
+        return payload
+
+    def _scene_of(self, payload: dict) -> Tuple[Dict[int, Node], Dict[int, Arrow]]:
+        """Datensatz in eigene Node/Arrow-Objekte umwandeln, ohne die geoeffnete Ebene anzutasten."""
+        saved = (self.nodes, self.arrows, self.next_node_id, self.next_arrow_id)
+        self.nodes, self.arrows = {}, {}
+        try:
+            self._load_payload(payload)
+            return self.nodes, self.arrows
+        finally:
+            self.nodes, self.arrows, self.next_node_id, self.next_arrow_id = saved
+
+    @contextlib.contextmanager
+    def _scene(self, sec: dict):
+        """Bausteine/Pfeile eines Abschnitts voruebergehend zur aktuellen Ebene machen
+        (_arrow_route & Co. arbeiten auf self.nodes)."""
+        saved = (self.nodes, self.arrows)
+        self.nodes, self.arrows = sec["nodes"], sec["arrows"]
+        try:
+            yield
+        finally:
+            self.nodes, self.arrows = saved
+
+    def _export_sections(self) -> List[dict]:
+        """Alle Ablaufplaene zum Export: Hauptprogramm, dann die Funktionen (von oben nach unten)."""
+        out: List[dict] = []
+        seen: Set[Tuple[str, str]] = set()
+
+        def walk(payload: dict, title: str) -> None:
+            nodes, arrows = self._scene_of(payload)
+            if not nodes:
+                return
+            out.append({"title": title, "nodes": nodes, "arrows": arrows})
+            funcs = sorted((n for n in nodes.values() if n.template_label == "Funktion" and n.subdiagram),
+                           key=lambda n: (n.y, n.x))
+            for node in funcs:
+                name = " ".join((node.label or "").split()) or "unbenannt"
+                key = (name, node.subdiagram)    # gleiche Funktion mehrfach aufgerufen -> nur einmal
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    sub = json.loads(node.subdiagram)
+                except (ValueError, TypeError):
+                    continue    # beschaedigt: meldet R36
+                walk(sub, f"Funktion: {name}")
+
+        walk(self._root_payload(), "Hauptprogramm")
+        return out
+
+    def _scene_bounds(self) -> Tuple[float, float, float, float]:
+        """Ausschnitt der aktuellen Ebene aus Bausteinen UND Pfeilverlaeufen – sonst werden
+        Umbrueche nach rechts/links (ueber/unter den Bausteinen) abgeschnitten."""
+        xs = [v for n in self.nodes.values() for v in (n.x - n.width / 2, n.x + n.width / 2)]
+        ys = [v for n in self.nodes.values() for v in (n.y - n.height / 2, n.y + n.height / 2)]
+        for arrow in self.arrows.values():
+            route = self._arrow_route(arrow)
+            if not route:
+                continue
+            xs += [p[0] for p in route]
+            ys += [p[1] for p in route]
+            if arrow.label:
+                mx, my = self._arrow_label_pos(route, arrow)
+                xs.append(mx + 4 + 8 * len(arrow.label))
+                ys.append(my - 16)
+        return (min(xs) - EXPORT_PAD, min(ys) - EXPORT_PAD, max(xs) + EXPORT_PAD, max(ys) + EXPORT_PAD)
+
+    def _layout_sections(self, sections: List[dict], measure_title) -> Tuple[float, float, bool]:
+        """Abschnitte nebeneinander anordnen. Jeder Abschnitt erhaelt
+        ox/w (Spalte im Gesamtbild) und dx/dy (Verschiebung Welt -> Bild)."""
+        titled = len(sections) > 1
+        x = height = 0.0
+        for sec in sections:
+            with self._scene(sec):
+                minx, miny, maxx, maxy = self._scene_bounds()
+            bw, bh = maxx - minx, maxy - miny
+            top = TITLE_H if titled else 0
+            sec["w"] = max(bw, measure_title(sec["title"]) + 2 * EXPORT_PAD) if titled else bw
+            sec["ox"] = x
+            sec["dx"] = x + (sec["w"] - bw) / 2 - minx    # Ablaufplan mittig unter der Ueberschrift
+            sec["dy"] = top - miny
+            x += sec["w"]
+            height = max(height, top + bh)
+        return x, height, titled
 
     def _svg_node(self, node: Node, tx, ty, poly) -> str:
         fill, border = NODE_STYLE.get(node.template_label, DEFAULT_STYLE)
@@ -3315,38 +3450,44 @@ class PapEditor(tk.Tk):
         return "\n".join(s)
 
     def render_to_image(self):
-        # Ausschnitt aus Bausteinen UND Pfeilverlaeufen bestimmen, sonst werden
-        # Umbrueche nach rechts/links (ueber/unter den Bausteinen) abgeschnitten
+        """Bild des kompletten PAP: Hauptprogramm und alle Funktionen nebeneinander."""
+        sections = self._export_sections()
+        if not sections:
+            return Image.new("RGBA", (1, 1), (248, 250, 252, 255))
+        title_font = self._load_font(round(TITLE_SIZE * 15 / 11), bold=True)   # wie die Blocktexte etwas groesser
+        measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+        def title_box(text: str) -> Tuple[float, float, float, float]:
+            return measure.textbbox((0, 0), text, font=title_font)
+
+        width, height, titled = self._layout_sections(sections, lambda t: title_box(t)[2] - title_box(t)[0])
+        image = Image.new("RGBA", (max(1, math.ceil(width)), max(1, math.ceil(height))), (248, 250, 252, 255))
+        draw = ImageDraw.Draw(image)
+        fonts: Dict[int, object] = {}
+        small_font = self._load_font(12)
+        for i, sec in enumerate(sections):
+            if titled:
+                if i:
+                    draw.line([sec["ox"], 16, sec["ox"], height - 16], fill=DIVIDER_COLOR, width=1)
+                l, t, r, b = title_box(sec["title"])
+                draw.text((sec["ox"] + sec["w"] / 2 - (l + r) / 2, TITLE_H / 2 + 8 - (t + b) / 2), sec["title"],
+                          fill=TEXT_COLOR, font=title_font)
+            with self._scene(sec):
+                self._draw_scene_image(draw, -sec["dx"], -sec["dy"], fonts, small_font)
+        return image
+
+    def _draw_scene_image(self, draw, ox: float, oy: float, fonts: Dict[int, object], small_font) -> None:
+        """Aktuelle Ebene ins Pillow-Bild zeichnen; (ox, oy) ist der Welt-Punkt fuer Bildpunkt (0, 0)."""
         routes = {}
         for arrow in self.arrows.values():
-            if arrow.source_id in self.nodes and arrow.target_id in self.nodes:
-                route = self._arrow_route(arrow)
-                if route:
-                    routes[arrow.id] = route
-        xs = [v for n in self.nodes.values() for v in (n.x - n.width / 2, n.x + n.width / 2)]
-        ys = [v for n in self.nodes.values() for v in (n.y - n.height / 2, n.y + n.height / 2)]
-        for arrow_id, route in routes.items():
-            xs += [p[0] for p in route]
-            ys += [p[1] for p in route]
-            label = self.arrows[arrow_id].label
-            if label:
-                mx, my = self._arrow_label_pos(route, self.arrows[arrow_id])
-                xs.append(mx + 4 + 8 * len(label))
-                ys.append(my - 12)
-        pad = 48
-        ox = (min(xs) if xs else 0) - pad
-        oy = (min(ys) if ys else 0) - pad
-        width = max(1, int(math.ceil((max(xs) if xs else 0) - ox + pad)))
-        height = max(1, int(math.ceil((max(ys) if ys else 0) - oy + pad)))
+            route = self._arrow_route(arrow)
+            if route:
+                routes[arrow.id] = route
 
         def sh(coords):
             # flache Koordinatenliste [x, y, x, y, ...] in Bildkoordinaten verschieben
             return [c - (ox if i % 2 == 0 else oy) for i, c in enumerate(coords)]
 
-        image = Image.new("RGBA", (width, height), (248, 250, 252, 255))
-        draw = ImageDraw.Draw(image)
-        fonts: Dict[int, object] = {}
-        small_font = self._load_font(12)
         for arrow_id, route in routes.items():
             arrow = self.arrows[arrow_id]
             flat = sh([coord for point in route for coord in point])
@@ -3386,7 +3527,6 @@ class PapEditor(tk.Tk):
                 tw = text_bbox[2] - text_bbox[0]
                 th = text_bbox[3] - text_bbox[1]
                 draw.multiline_text((cx - tw / 2, cy - th / 2), label, fill="#111111", font=font, align="center")
-        return image
 
     def _draw_arrow_head(self, draw, x1, y1, x2, y2):
         angle = math.atan2(y2 - y1, x2 - x1)
@@ -3397,10 +3537,14 @@ class PapEditor(tk.Tk):
         p3 = (x2 - length * math.cos(angle + spread), y2 - length * math.sin(angle + spread))
         draw.polygon([p1, p2, p3], fill="#111111")
 
-    def _load_font(self, size: int):
+    def _load_font(self, size: int, bold: bool = False):
         if ImageFont is None:
             return None
-        for candidate in ["DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"]:
+        candidates = ["DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"]
+        if bold:
+            candidates = ["DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                          "C:/Windows/Fonts/arialbd.ttf", "arialbd.ttf"] + candidates
+        for candidate in candidates:
             try:
                 return ImageFont.truetype(candidate, size=size)
             except Exception:

@@ -28,7 +28,8 @@ Ein kleines Tkinter-Applet zum schnellen Erstellen von Programmablaufplaenen.
 - Knickpunkte: markierten Pfeil anklicken setzt einen Knick, Ziehen verschiebt
   ihn am Raster, Doppel-/Rechtsklick auf den Knick entfernt ihn
 - Speichern und Laden als JSON
-- Export als PNG und JPG
+- Export als PNG, JPG und SVG – immer der ganze PAP: Hauptprogramm und alle
+  Funktionen (auch verschachtelte) nebeneinander, jeweils mit Ueberschrift
 - Informationsfluss: hellblauer Baustein "Infofluss" links neben dem Start, verbunden
   per Pfeil an die linke Seite des Starts. Doppelklick oeffnet den IBD-Editor
   (siehe unten "Informationsfluss (IBD)")
@@ -134,7 +135,7 @@ Protokoll ueber `window.postMessage` (in `web/static/pap.js`, Abschnitt "Einbett
 |---|---|
 | Editor -> Host | `{source:'pap-editor', event:'ready'}` |
 | Host -> Editor | `{target:'pap-editor', action:'load', diagram:<JSON wie "Speichern" oder null>, title, downloads:true}` |
-| Editor -> Host | `{source:'pap-editor', event:'save', diagram:<JSON>, svg:<SVG-Text>}` |
+| Editor -> Host | `{source:'pap-editor', event:'save', diagram:<JSON>, svg:<SVG-Text>}` (SVG mit Hauptprogramm und allen Funktionen nebeneinander) |
 | Editor -> Host | `{source:'pap-editor', event:'exit'}` |
 | Editor -> Host | `{source:'pap-editor', event:'download', name, mime, blob:<Blob>}` |
 
